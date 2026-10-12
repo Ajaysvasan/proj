@@ -1,0 +1,30 @@
+{
+  "name": "proj-cli",
+  "version": "0.1.0",
+  "description": "proj: local static code-flow explorer (CLI and terminal UI). Talks to the native proj-engine.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "proj": "dist/src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/make-executable.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --test-concurrency=1 --test-timeout=120000 dist/test/*.test.js"
+  },
+  "dependencies": {
+    "chalk": "5.6.2",
+    "commander": "12.1.0",
+    "ink": "6.3.1",
+    "react": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "@types/react": "19.1.17",
+    "typescript": "5.9.3"
+  }
+}

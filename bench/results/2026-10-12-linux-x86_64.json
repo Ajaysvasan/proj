@@ -1,0 +1,348 @@
+{
+  "environment": {
+    "os": "linux 7.2.9-100.fc43.x86_64",
+    "cpu": "Intel(R) Core(TM) Ultra 7 255HX",
+    "cores": 20,
+    "memory_gib": 15,
+    "node": "v22.22.2",
+    "engine": {
+      "index_schema_version": 2,
+      "protocol_version": 1,
+      "tool_version": "0.1.0"
+    },
+    "compiler": "c++ (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)"
+  },
+  "generated_at": "2026-10-11T23:36:55.669Z",
+  "results": [
+    {
+      "files_requested": 500,
+      "files_discovered": 502,
+      "files_parsed": 500,
+      "files_skipped": 1,
+      "status": "partial",
+      "analysis_ms": 162,
+      "wall_ms": 169,
+      "phases_ms": {
+        "finalize": 15,
+        "resolve": 37,
+        "scan_and_parse": 107,
+        "total": 162
+      },
+      "peak_rss_mib": 15.6,
+      "index_mib": 3.9,
+      "symbols": 4482,
+      "edges": 8991,
+      "dependencies": 1286,
+      "routes": 40,
+      "traverse_nodes_returned": 94,
+      "queries": [
+        {
+          "label": "search substring \"fn1_\"",
+          "runs": 30,
+          "median_ms": 0.27,
+          "p95_ms": 0.62,
+          "max_ms": 1.85
+        },
+        {
+          "label": "search exact name",
+          "runs": 30,
+          "median_ms": 0.13,
+          "p95_ms": 0.15,
+          "max_ms": 0.18
+        },
+        {
+          "label": "search route \"GET /items0/42\"",
+          "runs": 30,
+          "median_ms": 0.07,
+          "p95_ms": 0.09,
+          "max_ms": 0.6
+        },
+        {
+          "label": "traverse forward depth 6 (max 500 nodes)",
+          "runs": 30,
+          "median_ms": 1.84,
+          "p95_ms": 2.06,
+          "max_ms": 2.17
+        },
+        {
+          "label": "traverse backward depth 4",
+          "runs": 30,
+          "median_ms": 0.14,
+          "p95_ms": 0.47,
+          "max_ms": 0.5
+        },
+        {
+          "label": "route_flow depth 4",
+          "runs": 30,
+          "median_ms": 0.67,
+          "p95_ms": 0.71,
+          "max_ms": 0.71
+        }
+      ]
+    },
+    {
+      "files_requested": 2000,
+      "files_discovered": 2002,
+      "files_parsed": 2000,
+      "files_skipped": 1,
+      "status": "partial",
+      "analysis_ms": 631,
+      "wall_ms": 636,
+      "phases_ms": {
+        "finalize": 58,
+        "resolve": 153,
+        "scan_and_parse": 415,
+        "total": 631
+      },
+      "peak_rss_mib": 31.6,
+      "index_mib": 15,
+      "symbols": 17952,
+      "edges": 35970,
+      "dependencies": 5105,
+      "routes": 160,
+      "traverse_nodes_returned": 78,
+      "queries": [
+        {
+          "label": "search substring \"fn1_\"",
+          "runs": 30,
+          "median_ms": 0.63,
+          "p95_ms": 1.48,
+          "max_ms": 3.35
+        },
+        {
+          "label": "search exact name",
+          "runs": 30,
+          "median_ms": 0.32,
+          "p95_ms": 0.34,
+          "max_ms": 0.37
+        },
+        {
+          "label": "search route \"GET /items0/42\"",
+          "runs": 30,
+          "median_ms": 0.18,
+          "p95_ms": 0.21,
+          "max_ms": 0.4
+        },
+        {
+          "label": "traverse forward depth 6 (max 500 nodes)",
+          "runs": 30,
+          "median_ms": 1.8,
+          "p95_ms": 2.36,
+          "max_ms": 3.82
+        },
+        {
+          "label": "traverse backward depth 4",
+          "runs": 30,
+          "median_ms": 0.38,
+          "p95_ms": 0.59,
+          "max_ms": 0.62
+        },
+        {
+          "label": "route_flow depth 4",
+          "runs": 30,
+          "median_ms": 0.67,
+          "p95_ms": 0.78,
+          "max_ms": 0.79
+        }
+      ]
+    },
+    {
+      "files_requested": 8000,
+      "files_discovered": 8002,
+      "files_parsed": 8000,
+      "files_skipped": 1,
+      "status": "partial",
+      "analysis_ms": 2614,
+      "wall_ms": 2619,
+      "phases_ms": {
+        "finalize": 261,
+        "resolve": 693,
+        "scan_and_parse": 1657,
+        "total": 2614
+      },
+      "peak_rss_mib": 33.1,
+      "index_mib": 62.9,
+      "symbols": 71832,
+      "edges": 143931,
+      "dependencies": 20426,
+      "routes": 640,
+      "traverse_nodes_returned": 162,
+      "queries": [
+        {
+          "label": "search substring \"fn1_\"",
+          "runs": 30,
+          "median_ms": 1.44,
+          "p95_ms": 1.54,
+          "max_ms": 5.27
+        },
+        {
+          "label": "search exact name",
+          "runs": 30,
+          "median_ms": 0.69,
+          "p95_ms": 0.75,
+          "max_ms": 1.05
+        },
+        {
+          "label": "search route \"GET /items0/42\"",
+          "runs": 30,
+          "median_ms": 0.44,
+          "p95_ms": 0.46,
+          "max_ms": 0.5
+        },
+        {
+          "label": "traverse forward depth 6 (max 500 nodes)",
+          "runs": 30,
+          "median_ms": 3.1,
+          "p95_ms": 5.79,
+          "max_ms": 6.58
+        },
+        {
+          "label": "traverse backward depth 4",
+          "runs": 30,
+          "median_ms": 0.4,
+          "p95_ms": 0.65,
+          "max_ms": 0.74
+        },
+        {
+          "label": "route_flow depth 4",
+          "runs": 30,
+          "median_ms": 0.69,
+          "p95_ms": 0.8,
+          "max_ms": 0.81
+        }
+      ]
+    },
+    {
+      "files_requested": 20000,
+      "files_discovered": 20002,
+      "files_parsed": 20000,
+      "files_skipped": 1,
+      "status": "partial",
+      "analysis_ms": 6758,
+      "wall_ms": 6764,
+      "phases_ms": {
+        "finalize": 680,
+        "resolve": 1841,
+        "scan_and_parse": 4231,
+        "total": 6758
+      },
+      "peak_rss_mib": 34.4,
+      "index_mib": 158,
+      "symbols": 179592,
+      "edges": 359631,
+      "dependencies": 50846,
+      "routes": 1600,
+      "traverse_nodes_returned": 140,
+      "queries": [
+        {
+          "label": "search substring \"fn1_\"",
+          "runs": 30,
+          "median_ms": 2.44,
+          "p95_ms": 4.91,
+          "max_ms": 7.03
+        },
+        {
+          "label": "search exact name",
+          "runs": 30,
+          "median_ms": 1.49,
+          "p95_ms": 3.01,
+          "max_ms": 3.67
+        },
+        {
+          "label": "search route \"GET /items0/42\"",
+          "runs": 30,
+          "median_ms": 1.02,
+          "p95_ms": 1.2,
+          "max_ms": 1.29
+        },
+        {
+          "label": "traverse forward depth 6 (max 500 nodes)",
+          "runs": 30,
+          "median_ms": 2.7,
+          "p95_ms": 3.41,
+          "max_ms": 5.53
+        },
+        {
+          "label": "traverse backward depth 4",
+          "runs": 30,
+          "median_ms": 0.39,
+          "p95_ms": 0.5,
+          "max_ms": 0.79
+        },
+        {
+          "label": "route_flow depth 4",
+          "runs": 30,
+          "median_ms": 0.57,
+          "p95_ms": 0.8,
+          "max_ms": 0.84
+        }
+      ]
+    },
+    {
+      "files_requested": 50000,
+      "files_discovered": 50002,
+      "files_parsed": 50000,
+      "files_skipped": 1,
+      "status": "partial",
+      "analysis_ms": 17309,
+      "wall_ms": 17315,
+      "phases_ms": {
+        "finalize": 1836,
+        "resolve": 4847,
+        "scan_and_parse": 10621,
+        "total": 17309
+      },
+      "peak_rss_mib": 35,
+      "index_mib": 399.9,
+      "symbols": 448992,
+      "edges": 899023,
+      "dependencies": 127038,
+      "routes": 4000,
+      "traverse_nodes_returned": 144,
+      "queries": [
+        {
+          "label": "search substring \"fn1_\"",
+          "runs": 30,
+          "median_ms": 5.68,
+          "p95_ms": 9.13,
+          "max_ms": 13.51
+        },
+        {
+          "label": "search exact name",
+          "runs": 30,
+          "median_ms": 3.3,
+          "p95_ms": 3.55,
+          "max_ms": 7.94
+        },
+        {
+          "label": "search route \"GET /items0/42\"",
+          "runs": 30,
+          "median_ms": 2.37,
+          "p95_ms": 2.63,
+          "max_ms": 3.05
+        },
+        {
+          "label": "traverse forward depth 6 (max 500 nodes)",
+          "runs": 30,
+          "median_ms": 2.84,
+          "p95_ms": 3.48,
+          "max_ms": 6.43
+        },
+        {
+          "label": "traverse backward depth 4",
+          "runs": 30,
+          "median_ms": 0.39,
+          "p95_ms": 0.64,
+          "max_ms": 0.65
+        },
+        {
+          "label": "route_flow depth 4",
+          "runs": 30,
+          "median_ms": 0.66,
+          "p95_ms": 0.76,
+          "max_ms": 0.85
+        }
+      ]
+    }
+  ]
+}

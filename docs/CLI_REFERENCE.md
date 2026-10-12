@@ -1,0 +1,223 @@
+# CLI reference
+
+```
+proj [global options] <command> [options]
+```
+
+## Global options
+
+| Option | Meaning |
+|---|---|
+| `--data-dir <dir>` | Data directory (registry, indexes, logs). Default: `$PROJ_HOME`, else `~/.local/share/proj` (`$XDG_DATA_HOME/proj` if set) on Linux, `~/Library/Application Support/proj` on macOS |
+| `--engine <path>` | `proj-engine` binary. Default: `$PROJ_ENGINE` (the `bin/proj` launcher sets it to `bin/proj-engine`), else `<repo>/build/engine/proj-engine`, else `PATH` |
+| `-v, --verbose` | Stream engine progress (INFO) to stderr |
+| `--debug` | Stream DEBUG engine logging to stderr |
+| `-q, --quiet` | Print nothing on success; use the exit code |
+| `-V, --version`, `-h, --help` | Version / help |
+
+Environment: `PROJ_HOME`, `PROJ_ENGINE`, `NO_COLOR` (disables colors),
+`PROJ_ASCII=1` (ASCII tree glyphs; also automatic for `TERM=dumb` and
+non-UTF-8 locales).
+
+## proj add
+
+```
+proj add <name> <path> [--reanalyze] [--exclude <pattern>]... [--include-default <name>]...
+         [--no-default-excludes] [--no-gitignore] [--max-file-size <size>] [--max-files <n>] [--json]
+```
+
+Registers `<path>` (resolved to its canonical absolute path) under `<name>`
+(1–64 characters: letters, digits, `.`, `_`, `-`, starting with a letter or
+digit) and runs a full analysis.
+
+- Rejects a name that is already registered unless `--reanalyze` is given.
+  Rejects a path registered under another name, a missing or unreadable
+  directory, and a file path.
+- `--reanalyze` re-indexes a registered project, reusing its stored options
+  unless new ones are given.
+- `--exclude` takes `.gitignore` syntax (`dir/`, `*.gen.ts`, `/root-only`,
+  `!negation`), repeatable.
+- `--include-default vendor` scans a directory excluded by default.
+  `--no-default-excludes` disables the built-in list.
+- `--no-gitignore` ignores `.gitignore` and `.git/info/exclude`.
+  `.projignore` in the project root is always applied. When the project is a
+  subdirectory of a Git work tree (for example `repo/backend`), the
+  `.gitignore` files of the enclosing directories up to the repository root
+  and the repository's `.git/info/exclude` also apply, as they do for Git.
+- `--max-file-size 2m` (bytes or `k`/`m` suffix; default 1 MiB, range 1 KiB to
+  64 MiB). `--max-files` (default 200,000).
+- `--json` prints the engine's summary as JSON on stdout.
+
+Default exclusions: `.git .hg .svn node_modules bower_components
+jspm_packages vendor dist build out target .venv venv __pycache__ .mypy_cache
+.pytest_cache .ruff_cache .tox .nox .eggs site-packages .gradle .idea .vscode
+.next .nuxt .svelte-kit .parcel-cache .turbo .cache coverage .nyc_output
+.terraform Pods DerivedData cmake-build-* *.egg-info .angular .expo
+.dart_tool`, and files `*.min.js *.min.mjs *.bundle.js *.chunk.js *.map *.pyc
+*.class *.o *.obj *.so *.dylib *.a`.
+
+The summary shows status, duration, file counts (discovered, parsed, with
+syntax errors, failed, skipped, unsupported, excluded), languages, symbols,
+relationships, call-resolution breakdown, routes, entry points, exception
+sites, unresolved references, parse problems, peak memory, index path and the
+first diagnostics.
+
+## proj refresh
+
+```
+proj refresh <project> [--json]
+```
+
+Brings the index of a registered project up to date after files were edited,
+added, deleted or renamed, without analyzing everything again.
+
+- Scans the project again with the options stored by the last `proj add`.
+- Reads and fingerprints every source file (FNV-1a 64 and size). It re-parses
+  only new files and files whose fingerprint, language or extractor version
+  changed. Modification times are not trusted: touching a file causes no work,
+  and an edit that keeps the timestamp is still detected.
+- Removes the facts of deleted files. A symbol whose identity (kind, qualified
+  name, parameter count, position among same-named symbols) is unchanged
+  keeps its id, so relationships from untouched files to it stay valid.
+- Re-resolves only relationships that could now resolve differently:
+  - calls and references naming a symbol that was added, removed, renamed or
+    changed signature, including subclasses of a changed class, functions
+    returning a changed type, and calls chained on those
+  - files whose declared types name such a symbol
+  - files that import a file whose exported interface changed
+  - files whose import resolution changed
+  Route, mount, middleware, override and module-load rows are regenerated. When
+  more than 40 % of the source files are affected, all relationships are
+  re-resolved instead, which is then just as fast.
+- Like `add`, it works on a private copy and replaces the index atomically. If
+  it fails, the previous index is kept.
+- The result is identical to what `proj add <name> <path> --reanalyze` would
+  produce. Tests and the `proj_index_dump` tool verify this
+  ([DEVELOPMENT.md](DEVELOPMENT.md)).
+
+The summary is the `add` summary plus two lines:
+
+```
+Refresh complete with problems (partial)
+  ...
+  Changes            1 changed, 1 added, 1 removed, 119 unchanged (re-parsed only changed and added files)
+  Re-resolved        642 relationships in 16 affected files
+```
+
+Errors: an unknown project, a project directory that no longer exists, or a
+project without an index (`proj add <name> <path> --reanalyze` creates one)
+exit with 2. An index from another schema version also needs `--reanalyze`,
+because a refresh cannot upgrade it (exit 1). A refresh is refused while
+another analysis of the same project is running.
+
+## proj log
+
+```
+proj log [project] [--limit <n>] [--json]
+proj log [project] --run <id> [--diagnostics <n>] [--json]
+```
+
+Lists recent runs (id, project, start time, duration, status, parsed/discovered
+files, symbols, relationships, unresolved references, parse errors, warnings),
+followed by the reasons for failed or interrupted runs and the latest
+application warnings and errors from `logs/proj.log`.
+
+`--run <id>` shows one run: timestamps, phase timings, tool and schema version,
+counts, peak memory, error message, and its diagnostics. Internal
+(application) problems are listed separately from source-analysis diagnostics
+(syntax errors, skipped files, unsupported constructs, exclusions). Only a
+bounded number of diagnostics is stored per run; the output says how many
+were dropped.
+
+## proj show
+
+```
+proj show <name> [--no-tui] [--check]
+```
+
+Opens the interactive explorer. It first verifies that the project is
+registered and that its index exists and is readable; otherwise it explains
+how to fix it (for example `proj add <name> <path> --reanalyze`). Without a
+TTY on stdin and stdout, or with `--no-tui`, it prints a text overview:
+counts, languages, entry points and routes.
+
+`--check` runs the index integrity check and exits 0 if the index is
+consistent, 1 otherwise.
+
+### Screens
+
+- **Home / search**: case-insensitive substring search over symbols (name and
+  qualified name), file paths and routes, run 120 ms after typing stops (at most
+  15 results per kind on screen). Exact name matches rank first, then names
+  starting with the query, then shorter names. Queries of one or two characters
+  match symbol-name prefixes only. `GET /api/users/:id`, `/api/users/42` and
+  `users` all match routes; parameters (`:id`, `{id}`, `<int:id>`) match any
+  segment. A query that starts with an HTTP method word (`get`, `post`,
+  `delete`, ...) searches routes only. Results show kind, name, `path:line`
+  and the qualified name, so duplicate names are distinguishable.
+- **Symbol**: location, parent, visibility, counts of outgoing and incoming
+  relationships by status, handled routes, entry-point role. Tabs:
+  *Callees* (forward tree), *Callers* (backward tree), *Exceptions* (explicit
+  sites, local handlers, possible sites in callees), *Source* (snippet read
+  from disk; warns if the file changed since indexing).
+- **File**: language, parse status, syntax errors. Tabs: *Symbols*,
+  *Dependencies* (local, external, unresolved), *Dependents*.
+- **Route**: method and full path, registration site, mount prefix and site,
+  handler (or why it is unresolved), middleware chain, startup path from an
+  entry point, and the call flow from the handler (tabs: *Flow*, *Callers*,
+  *Exceptions*).
+- **Entry points**, **Routes**, **Status and limitations**.
+
+Trees are bounded (depth adjustable, at most 300 nodes per view). A node
+reached a second time shows `shown above` instead of expanding again, so
+cycles terminate. Edge markers: `[unresolved: reason]`, `[ambiguous:
+candidates]`, `[heuristic]`, `[external]`; `xN` means N call sites.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `/` | focus the search box (home) |
+| typing, Backspace, Ctrl+U | edit / clear the query |
+| Esc | leave the search box; elsewhere go back |
+| Backspace, `b` | go back (when not typing) |
+| Up / Down | move the selection |
+| Enter | open the selected result or tree node |
+| Tab, Right / Left | next / previous tab |
+| `+` / `-` | increase / decrease traversal depth |
+| `u` | show or hide unresolved and external edges |
+| `f` | open the symbol's file |
+| `o` | open the route handler |
+| `e`, `r`, `s` | entry points, routes, status (home) |
+| `h` | home |
+| `?` | help |
+| `q`, Ctrl+C | quit (`q` is typed normally inside the search box) |
+
+The terminal is restored on exit, Ctrl+C, SIGTERM and SIGHUP, and the engine
+session process is closed.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success (for `add`: analysis complete with no problems) |
+| 1 | internal failure: engine crash/timeout/malformed output, failed analysis, corrupt or incompatible index, SQLite or I/O error, failed integrity check |
+| 2 | user error: invalid arguments, unknown command or project, invalid or vanished path, missing index, duplicate registration, analysis already running |
+| 3 | `add`, `refresh`: analysis completed but is partial (syntax errors, failed/skipped/unreadable files, limits reached) |
+| 4 | `add`, `refresh`: no files in a supported language were found |
+| 130 | interrupted (Ctrl+C) |
+
+## Examples
+
+```sh
+proj add api ~/src/api --exclude 'fixtures/' --exclude '*.generated.ts'
+proj add api ~/src/api --reanalyze
+proj refresh api
+proj refresh api --json | jq .stats.refresh
+proj -v add mono ~/src/monorepo --include-default vendor --max-file-size 2m
+proj log
+proj log api --run 12
+proj show api
+proj show api --check
+PROJ_HOME=/tmp/proj-scratch proj add demo ./demo --json | jq .counts
+```

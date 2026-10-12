@@ -1,0 +1,31 @@
+#!/bin/sh
+# proj launcher: runs the CLI of this checkout with the engine in bin/.
+# Put this directory on PATH, or symlink this file into a directory on PATH.
+# Build first with scripts/build.sh (see README.md).
+
+# Resolve symlinks to find the checkout this launcher belongs to.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+bin_dir=$(cd "$(dirname "$self")" && pwd -P) || exit 1
+root=$(dirname "$bin_dir")
+cli="$root/cli/dist/src/index.js"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "proj: Node.js 20 or newer is required, but 'node' was not found on PATH" >&2
+  exit 1
+fi
+if [ ! -f "$cli" ] || [ ! -d "$root/cli/node_modules" ]; then
+  echo "proj: the CLI is not built yet. Run: $root/scripts/build.sh" >&2
+  exit 1
+fi
+if [ -z "$PROJ_ENGINE" ] && [ -x "$bin_dir/proj-engine" ]; then
+  PROJ_ENGINE="$bin_dir/proj-engine"
+  export PROJ_ENGINE
+fi
+exec node "$cli" "$@"

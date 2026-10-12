@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+          - os: macos-latest
+            cc: clang
+            cxx: clang++
+    runs-on: ${{ matrix.os }}
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Configure engine
+        run: cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release -DPROJ_WARNINGS_AS_ERRORS=ON
+
+      - name: Build engine
+        run: cmake --build build/engine --parallel
+
+      - name: Engine unit tests
+        run: ctest --test-dir build/engine --output-on-failure
+
+      - name: Install CLI dependencies
+        working-directory: cli
+        run: npm ci
+
+      - name: CLI tests
+        working-directory: cli
+        run: npm test
+
+      - name: Memory and query benchmark (regression check)
+        run: node bench/run.mjs --sizes 500,5000 --queries 10 --max-rss-mib 128
