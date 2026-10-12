@@ -51,3 +51,17 @@ jobs:
 
       - name: Memory and query benchmark (regression check)
         run: node bench/run.mjs --sizes 500,5000 --queries 10 --max-rss-mib 128
+
+      - name: Prebuilt Linux engine runs
+        if: runner.os == 'Linux'
+        run: bin/proj-engine --version
+
+      - name: One-step build script and launcher
+        run: |
+          ./scripts/build.sh
+          bin/proj --version
+          export PROJ_HOME="$RUNNER_TEMP/proj-home"
+          code=0
+          bin/proj add fixture fixtures/express-api || code=$?
+          test "$code" -eq 0 || test "$code" -eq 3   # 3 = partial (the fixture has a syntax error)
+          bin/proj show fixture --check

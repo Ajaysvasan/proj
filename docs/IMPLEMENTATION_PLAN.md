@@ -54,7 +54,7 @@ plus shared registry in the user data directory. Details:
 - [x] Linux build and full test suites (GCC 15.3, Node 22)
 - [x] Leak checks: allocator-exact lifecycle, query, parse and aborted-walk tests; long-running serve RSS and CLI heap measurements
 - [x] Analysis peak memory flat with repository size (a `GROUP BY` statistics regression was found by the benchmark and fixed)
-- [~] Clang and macOS: CI workflow written (`.github/workflows/ci.yml`) but **not run**; not verified
+- [x] Clang and macOS: GitHub Actions builds with `-Werror` and runs all tests on Ubuntu GCC, Ubuntu Clang and macOS (first green run on 2026-10-12, after a Clang-only unused-field error was fixed)
 - [x] Documentation
 
 ## Phase 8: Refresh and deeper resolution
@@ -74,7 +74,7 @@ plus shared registry in the user data directory. Details:
 - [ ] Parallel parsing (the design allows a worker pool; one worker today)
 
 ## Next milestone
-Run the CI matrix to verify Clang and macOS. Then `proj remove`, and typing
+`proj remove`, and typing
 more receivers (generic element types, untyped lambda parameters). On Kafka,
 26 % of the unresolved calls have a receiver of unknown type and another 28 %
 are chained on a call that is itself unresolved.

@@ -22,7 +22,7 @@ build/             (generated) CMake build trees and downloaded sources
 
 | Tool | Version used here | Notes |
 |---|---|---|
-| C++ compiler | GCC 15.3 | C++20; Clang should work but has not been verified |
+| C++ compiler | GCC 15.3 | C++20; CI also builds with Clang (Ubuntu) and Apple Clang (macOS) |
 | CMake | 3.31 (≥ 3.24 required) | |
 | Node.js / npm | 22.22 / 10.9 (Node ≥ 20 required) | |
 | network | first configure only | downloads pinned archives into `build/` |

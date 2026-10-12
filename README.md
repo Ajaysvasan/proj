@@ -26,7 +26,8 @@ uncertain links are visible rather than hidden.
 
 ### Requirements
 
-- A C++20 compiler: GCC (tested with 15.3) or Clang (not yet verified)
+- A C++20 compiler: GCC or Clang (tested: GCC 15.3 locally; GCC, Clang and
+  Apple Clang in CI)
 - CMake 3.24 or newer
 - Node.js 20 or newer, with npm
 - Network access the first time you build. CMake downloads pinned,
@@ -210,17 +211,20 @@ Leak checks: repeated analyze/refresh/query cycles return the allocator to
 the same byte count, and a 30,000-request `--serve` session on the Kafka index
 stays at 17 MiB RSS (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#memory-and-leak-checks)).
 These numbers come from synthetic code and one machine; real repositories with
-very large files or very large single directories will differ. macOS has not
-been measured.
+very large files or very large single directories will differ. Performance
+on macOS has not been measured; CI only checks that peak memory stays under
+128 MiB there.
 
 ## Platform status
 
 - **Linux (Fedora 43, x86_64, GCC 15.3, Node 22):** built and fully tested
   (engine: 62 test cases plus 4 leak checks; CLI: 38 tests).
-- **Clang:** not verified (not installed on the development machine).
-- **macOS:** not verified. The code uses only POSIX and `std::filesystem` APIs,
-  and a GitHub Actions workflow for Ubuntu (GCC, Clang) and macOS is included
-  in `.github/workflows/ci.yml`, but it has not been run.
+- **CI (GitHub Actions; `.github/workflows/ci.yml`):** on Ubuntu with GCC,
+  Ubuntu with Clang, and macOS with Apple Clang, every push builds the engine
+  with warnings as errors and runs the engine tests, the CLI tests, the
+  benchmark memory check, and `scripts/build.sh` with the `bin/proj`
+  launcher. All jobs pass. The leak checks need glibc, so they are skipped on
+  macOS.
 
 ## Documentation
 

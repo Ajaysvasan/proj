@@ -19,7 +19,8 @@ and excluded from Git (`.gitignore`). Current status is in
   indexed SQL, capped caches and query limits. Measure (`bench/run.mjs`) before
   and after performance changes.
 - Don't claim platform support, test results or performance that you have not
-  observed. Clang and macOS are **not verified** yet.
+  observed. Clang and macOS are verified only through CI (GitHub Actions),
+  where the glibc-based leak checks are skipped on macOS.
 - No destructive commands against the user's files. Tests only delete temporary
   directories they created themselves.
 
