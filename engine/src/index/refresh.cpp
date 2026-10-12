@@ -86,7 +86,8 @@ void IncrementalUpdate::snapshot_interface(int64_t file_id, const char* which) {
   // Symbol signatures (including declared return types): a difference means
   // references to that name may now resolve differently anywhere.
   run("INSERT INTO refresh_" + t + "_sig(file_id, name, sig) SELECT s.file_id, s.name, s.kind || '|' || "
-      "s.qualified_name || '|' || IFNULL(s.param_count, -1) || '|' || s.is_definition || '|' || s.exported || '|' || "
+      "s.qualified_name || '|' || IFNULL(s.param_count, -1) || '|' || IFNULL(s.param_types, '') || '|' || "
+      "s.is_definition || '|' || s.exported || '|' || "
       "s.is_static || '|' || IFNULL(s.container, '') || '|' || IFNULL(p.qualified_name, '') || '|' || "
       "IFNULL(s.visibility, '') || '|' || IFNULL((SELECT h.type_name FROM type_hints h WHERE h.scope_symbol_id = s.id "
       "AND h.name = '#return'), '') FROM symbols s LEFT JOIN symbols p ON p.id = s.parent_id "
@@ -194,6 +195,7 @@ void IncrementalUpdate::prepare(Resolver& resolver, bool files_added_or_removed,
            "(SELECT id FROM routes WHERE origin_route_id IS NOT NULL)");
   db_.exec("DELETE FROM routes WHERE origin_route_id IS NOT NULL");
   db_.exec("UPDATE route_middleware SET status = 'pending', symbol_id = NULL WHERE ref_kind != 'inline'");
+  db_.exec("UPDATE routes SET method = raw_method WHERE method != raw_method");
   db_.exec("UPDATE routes SET full_path = path, mount_prefix = NULL, mount_status = 'pending', mount_id = NULL, "
            "router_id = NULL");
   db_.exec("UPDATE routes SET handler_symbol_id = NULL, handler_status = 'pending', handler_note = raw_handler_note "

@@ -2,8 +2,13 @@
 //
 // Extracts functions, classes and methods, imports (absolute, relative,
 // aliased, star), calls, constructor/annotation type hints, raise/except
-// sites, `if __name__ == "__main__"` guards, and Flask / FastAPI / Django
-// route registrations.
+// sites, `if __name__ == "__main__"` guards, and route registrations: Flask
+// (decorators, add_url_rule, MethodView), FastAPI, Django (path/re_path/url,
+// class-based views, include() prefixes), Tornado and webapp2 handler lists,
+// web.py URL tuples, Falcon add_route, Pyramid add_route/add_view/@view_config
+// and Bottle decorators. Handler classes are dispatched to their HTTP method
+// methods (get/post, on_get, GET) by the resolver.
+#include <cctype>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -12,6 +17,7 @@
 
 #include "core/paths.hpp"
 #include "parse/extractors.hpp"
+#include "parse/route_util.hpp"
 #include "parse/ts_util.hpp"
 
 namespace proj {
@@ -46,6 +52,96 @@ std::string upper(std::string s) {
   return s;
 }
 
+std::string last_part(const std::string& dotted) {
+  auto p = dotted.rfind('.');
+  return p == std::string::npos ? dotted : dotted.substr(p + 1);
+}
+
+// A URL regex as used by Tornado, webapp2, web.py and Django url()/re_path(),
+// shown as a route path: "^/users/(?P<id>\d+)/?$" -> "/users/{id}".
+std::string regex_path(const std::string& p) {
+  std::string out;
+  size_t i = 0;
+  if (!p.empty() && p[0] == '^') i = 1;
+  auto skip_quantifier = [&]() {
+    while (i < p.size() && (p[i] == '?' || p[i] == '*' || p[i] == '+')) ++i;
+    if (i < p.size() && p[i] == '{') {
+      auto close = p.find('}', i);
+      if (close != std::string::npos) i = close + 1;
+    }
+  };
+  while (i < p.size()) {
+    char c = p[i];
+    if (c == '$' && i + 1 == p.size()) break;
+    if (c == '/' && i + 1 < p.size() && p[i + 1] == '?') {  // optional slash
+      i += 2;
+      continue;
+    }
+    if (c == '\\' && i + 1 < p.size()) {
+      char n = p[i + 1];
+      i += 2;
+      if (std::isalpha(static_cast<unsigned char>(n))) {  // \d, \w, ...: a parameter
+        out += "{param}";
+        skip_quantifier();
+      } else {
+        out += n;
+      }
+      continue;
+    }
+    if (c == '(') {
+      int depth = 1;
+      size_t j = i + 1;
+      while (j < p.size() && depth > 0) {
+        if (p[j] == '\\') {
+          j += 2;
+          continue;
+        }
+        if (p[j] == '(') ++depth;
+        else if (p[j] == ')') --depth;
+        ++j;
+      }
+      std::string group = p.substr(i, j - i);
+      if (group.rfind("(?P<", 0) == 0 && group.find('>') != std::string::npos) {
+        out += "{" + group.substr(4, group.find('>') - 4) + "}";
+      } else {
+        out += "{param}";
+      }
+      i = j;
+      skip_quantifier();
+      continue;
+    }
+    if (c == '[') {
+      auto close = p.find(']', i);
+      i = close == std::string::npos ? p.size() : close + 1;
+      out += "{param}";
+      skip_quantifier();
+      continue;
+    }
+    if (c == '.' && i + 1 < p.size() && (p[i + 1] == '*' || p[i + 1] == '+')) {
+      out += "*";
+      i += 2;
+      continue;
+    }
+    if (c == '?' || c == '+' || c == '*') {
+      ++i;
+      continue;
+    }
+    out += c;
+    ++i;
+  }
+  if (out.empty() || out[0] != '/') out = "/" + out;
+  std::string clean;
+  for (char ch : out) {
+    if (ch == '/' && !clean.empty() && clean.back() == '/') continue;
+    clean += ch;
+  }
+  return clean;
+}
+
+bool looks_like_regex(const std::string& p) {
+  return p.find_first_of("^$()[]\\+") != std::string::npos;
+}
+
 class PyExtractor {
  public:
   PyExtractor(const ExtractInput& in, FileFacts& out) : in_(in), out_(out), src_(in.source) {}
@@ -69,6 +165,8 @@ class PyExtractor {
   std::vector<TryCtx> tries_;
   std::vector<std::pair<const void*, std::string>> except_aliases_;
   std::unordered_map<std::string, std::string> routers_;  // variable -> framework
+  std::unordered_set<std::string> imported_;  // top-level modules imported by this file
+  std::unordered_map<std::string, TSNode> lists_;  // module-level list/tuple assignments (handler lists)
   std::unordered_map<const void*, int> awaiting_receiver_;  // inner call node -> outer call index
 
   std::string_view text(TSNode n) const { return ts::text(n, src_); }
@@ -209,6 +307,8 @@ class PyExtractor {
     else if (t == "try_statement") on_try(n);
     else if (t == "except_clause") on_except(n);
     else if (t == "if_statement") on_if(n);
+    else if (t == "elif_clause") on_if_dispatch(n);
+    else if (t == "match_statement") on_match_dispatch(n);
     else if (t == "for_statement") on_for(n);
     else if (t == "lambda") return true;
     return true;
@@ -305,8 +405,10 @@ class PyExtractor {
       if (is(item, "dotted_name")) {
         imp.specifier = std::string(text(item));
         imp.bindings.push_back({imp.specifier, "*", "module"});
+        imported_.insert(imp.specifier.substr(0, imp.specifier.find('.')));
       } else if (is(item, "aliased_import")) {
         imp.specifier = std::string(text(field(item, "name")));
+        imported_.insert(imp.specifier.substr(0, imp.specifier.find('.')));
         imp.bindings.push_back({std::string(text(field(item, "alias"))), "*", "module"});
       } else {
         continue;
@@ -322,6 +424,7 @@ class PyExtractor {
     imp.scope = scope();
     TSNode module = field(n, "module_name");
     imp.specifier = std::string(text(module));
+    imported_.insert(imp.specifier.substr(0, imp.specifier.find('.')));
     uint32_t c = ts_node_named_child_count(n);
     for (uint32_t i = 0; i < c; ++i) {
       TSNode item = ts_node_named_child(n, i);
@@ -342,6 +445,7 @@ class PyExtractor {
 
   void on_call(TSNode n) {
     TSNode fn = field(n, "function");
+    on_route_call(n, fn);
     CallFact c;
     c.caller = scope();
     c.kind = "calls";
@@ -436,47 +540,264 @@ class PyExtractor {
     }
   }
 
-  // Django: urlpatterns = [path('users/<int:id>/', views.user_detail), ...]
+  // Django: urlpatterns = [path('users/<int:id>/', views.user_detail), re_path(r'^x/$', View.as_view()),
+  //                        url(r'^api/', include('app.urls')), ...]
   void try_django_path(TSNode call, const std::string& name) {
-    if (name != "path" && name != "re_path") return;
+    if (name != "path" && name != "re_path" && name != "url") return;
     TSNode list = ts_node_parent(call);
-    if (!is(list, "list")) return;
+    if (!is(list, "list") && !is(list, "tuple")) return;
     TSNode assign = ts_node_parent(list);
-    if (!is(assign, "assignment") || text(field(assign, "left")) != "urlpatterns") return;
+    if (is(assign, "binary_operator")) assign = ts_node_parent(assign);  // urlpatterns += [...]
+    if ((!is(assign, "assignment") && !is(assign, "augmented_assignment")) || text(field(assign, "left")) != "urlpatterns") {
+      return;
+    }
     auto args = positional_args(call);
     if (args.size() < 2) return;
     auto route = string_value(args[0]);
     if (!route) return;
-    if (is(args[1], "call")) return;  // include(...) mounts are not resolved
+    std::string path = name == "path" ? "/" + *route : regex_path(*route);
+    if (is(args[1], "call") && last_part(std::string(text(field(args[1], "function")))) == "include") {
+      // include('app.urls') / include(app.urls): routes of that URLconf get this prefix.
+      auto inc = positional_args(args[1]);
+      if (inc.empty()) return;
+      MountFact m;
+      m.framework = "django";
+      m.registrar = "urlpatterns";
+      m.prefix = path;
+      m.has_prefix = true;
+      m.scope = scope();
+      m.pos = ts::start_pos(call);
+      m.target.pos = ts::start_pos(inc[0]);
+      m.target.text = ts::short_text(inc[0], src_);
+      if (auto mod = string_value(inc[0])) {
+        m.target.kind = "module";
+        m.target.name = *mod;
+      } else if (is(inc[0], "identifier") || is(inc[0], "attribute")) {
+        m.target.kind = "module";
+        m.target.name = std::string(text(inc[0]));
+      } else {
+        m.target.kind = "other";
+      }
+      out_.mounts.push_back(std::move(m));
+      return;
+    }
     RouteFact r;
     r.framework = "django";
     r.method = "ANY";
-    r.path = "/" + *route;
+    r.path = path;
     r.registrar = "urlpatterns";
     r.scope = scope();
     r.pos = ts::start_pos(call);
     r.confidence = "recognized";
     r.has_handler = true;
-    r.handler.pos = ts::start_pos(args[1]);
-    r.handler.text = ts::short_text(args[1], src_);
-    if (is(args[1], "identifier")) {
-      r.handler.kind = "identifier";
-      r.handler.name = std::string(text(args[1]));
-    } else if (is(args[1], "attribute")) {
-      TSNode target = args[1];
-      // views.UserView.as_view -> UserView
-      if (text(field(target, "attribute")) == "as_view") target = field(target, "object");
-      r.handler.kind = is(target, "attribute") ? "member" : "identifier";
-      if (is(target, "attribute")) {
-        r.handler.name = std::string(text(field(target, "attribute")));
-        r.handler.receiver = ts::short_text(field(target, "object"), src_);
-      } else {
-        r.handler.name = std::string(text(target));
-      }
-    } else {
-      r.handler.kind = "other";
-    }
+    r.handler = handler_ref(args[1]);
     out_.routes.push_back(std::move(r));
+  }
+
+  // A route handler argument: a function or class name, views.Class.as_view(),
+  // a resource object Resource(), or a class named by a string ('module.Class').
+  RefFact handler_ref(TSNode h) const {
+    RefFact ref;
+    ref.pos = ts::start_pos(h);
+    ref.text = ts::short_text(h, src_);
+    if (is(h, "call")) {
+      TSNode f = field(h, "function");
+      if (is(f, "attribute") && text(field(f, "attribute")) == "as_view") {
+        h = field(f, "object");  // class-based view
+      } else if ((is(f, "identifier") || is(f, "attribute")) &&
+                 std::isupper(static_cast<unsigned char>(last_part(std::string(text(f)))[0]))) {
+        ref.kind = "class";  // a handler object: Resource()
+        ref.name = std::string(text(f));
+        return ref;
+      } else {
+        ref.kind = "other";
+        return ref;
+      }
+    }
+    if (is(h, "identifier")) {
+      ref.kind = "identifier";
+      ref.name = std::string(text(h));
+    } else if (is(h, "attribute")) {
+      ref.kind = "member";
+      ref.name = std::string(text(field(h, "attribute")));
+      ref.receiver = ts::short_text(field(h, "object"), src_);
+    } else if (auto s = string_value(h); s && !s->empty() && s->find(' ') == std::string::npos) {
+      bool cls = std::isupper(static_cast<unsigned char>(last_part(*s)[0]));
+      ref.kind = cls ? "class" : "qualified";
+      ref.name = *s;
+      if (!cls) ref.receiver = last_part(*s);
+    } else {
+      ref.kind = "other";
+    }
+    return ref;
+  }
+
+  std::string framework_from_imports(const std::string& fallback) const {
+    for (const char* f : {"tornado", "webapp2", "falcon", "pyramid", "bottle", "cherrypy"}) {
+      if (imported_.count(f)) return f;
+    }
+    return fallback;
+  }
+
+  void add_list_route(const std::string& framework, const std::string& method, const std::string& raw_path,
+                      TSNode handler, const std::string& registrar, TSNode at, bool recognized) {
+    std::string path = looks_like_regex(raw_path) ? regex_path(raw_path) : raw_path;
+    if (path.empty() || path[0] != '/') return;
+    RouteFact r;
+    r.framework = framework;
+    r.method = method;
+    r.path = path;
+    r.registrar = registrar;
+    r.scope = scope();
+    r.pos = ts::start_pos(at);
+    r.confidence = recognized ? "recognized" : "heuristic";
+    if (!recognized) r.note = "route list passed to " + registrar;
+    r.has_handler = true;
+    r.handler = handler_ref(handler);
+    out_.routes.push_back(std::move(r));
+  }
+
+  // [(r"/path", Handler, ...), url(r"/x", Handler), webapp2.Route('/x', handler=H)]
+  void handler_list(TSNode list, const std::string& framework, const std::string& registrar, bool recognized) {
+    if (is(list, "identifier")) {
+      auto it = lists_.find(std::string(text(list)));
+      if (it == lists_.end()) return;
+      list = it->second;
+    }
+    if (!is(list, "list") && !is(list, "tuple")) return;
+    uint32_t c = ts_node_named_child_count(list);
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode item = ts_node_named_child(list, i);
+      TSNode path, handler;
+      if (is(item, "tuple") || is(item, "list")) {
+        if (ts_node_named_child_count(item) < 2) continue;
+        path = ts_node_named_child(item, 0);
+        handler = ts_node_named_child(item, 1);
+      } else if (is(item, "call")) {
+        std::string callee = last_part(std::string(text(field(item, "function"))));
+        if (callee != "url" && callee != "URLSpec" && callee != "Route" && callee != "route") continue;
+        auto args = positional_args(item);
+        if (args.empty()) continue;
+        path = args[0];
+        handler = args.size() > 1 ? args[1] : keyword_arg(item, "handler");
+      } else {
+        continue;
+      }
+      if (!handler.id) continue;
+      auto p = string_value(path);
+      if (!p) continue;
+      add_list_route(framework, "ANY", *p, handler, registrar, item, recognized);
+    }
+  }
+
+  std::vector<std::string> methods_arg(TSNode call, const char* key) const {
+    std::vector<std::string> out;
+    TSNode m = keyword_arg(call, key);
+    if (!m.id) return out;
+    if (auto v = string_value(m)) {
+      out.push_back(upper(*v));
+    } else if (is(m, "list") || is(m, "tuple")) {
+      uint32_t c = ts_node_named_child_count(m);
+      for (uint32_t i = 0; i < c; ++i) {
+        if (auto v = string_value(ts_node_named_child(m, i))) out.push_back(upper(*v));
+      }
+    }
+    return out;
+  }
+
+  // Route registrations made by calls (not decorators).
+  void on_route_call(TSNode call, TSNode fn) {
+    if (!is(fn, "identifier") && !is(fn, "attribute")) return;
+    std::string callee(text(fn));
+    std::string last = last_part(callee);
+    std::string receiver = is(fn, "attribute") ? std::string(text(field(fn, "object"))) : "";
+    auto args = positional_args(call);
+    // Standard library servers: HTTPServer(addr, Handler) -> Handler.do_GET/do_POST; make_server(host, port, app)
+    if (last == "HTTPServer" || last == "ThreadingHTTPServer" || last == "TCPServer" || last == "ThreadingTCPServer" ||
+        last == "make_server") {
+      size_t index = last == "make_server" ? 2 : 1;
+      if (args.size() > index) {
+        add_list_route(last == "make_server" ? "wsgi" : "http_server", "ANY", "/*", args[index], callee, call, true);
+      }
+      return;
+    }
+    // tornado.web.Application([...]), webapp2.WSGIApplication([...]), app.add_handlers(host, [...])
+    if (last == "Application" || last == "WSGIApplication" || last == "add_handlers") {
+      std::string fw = framework_from_imports("python_handlers");
+      bool recognized = fw == "tornado" || fw == "webapp2";
+      TSNode list = last == "add_handlers" ? (args.size() > 1 ? args[1] : TSNode{}) : (args.empty() ? keyword_arg(call, "handlers") : args[0]);
+      if (list.id) handler_list(list, fw, callee, recognized);
+      return;
+    }
+    // Falcon: app.add_route('/things', ThingsResource()) ; Pyramid: config.add_route('home', '/')
+    if (last == "add_route" && args.size() >= 2) {
+      auto first = string_value(args[0]);
+      if (!first) return;
+      auto second = string_value(args[1]);
+      if (second && !first->empty() && (*first)[0] != '/') {
+        RouterFact r;  // Pyramid route name -> pattern, used by add_view / @view_config
+        r.name = *first;
+        r.kind = "pyramid_route";
+        r.framework = "pyramid";
+        r.prefix = (*second).empty() || (*second)[0] == '/' ? *second : "/" + *second;
+        r.scope = scope();
+        r.line = ts::start_pos(call).line;
+        out_.routers.push_back(std::move(r));
+        return;
+      }
+      if (!second && !first->empty() && (*first)[0] == '/') {
+        std::string fw = imported_.count("falcon") ? "falcon" : "python_handlers";
+        add_list_route(fw, "ANY", *first, args[1], receiver.empty() ? callee : receiver, call, fw == "falcon");
+      }
+      return;
+    }
+    // Pyramid: config.add_view(view, route_name='home', request_method='POST')
+    if (last == "add_view") {
+      TSNode route_name = keyword_arg(call, "route_name");
+      auto rn = route_name.id ? string_value(route_name) : std::nullopt;
+      TSNode view = !args.empty() ? args[0] : keyword_arg(call, "view");
+      if (!rn || !view.id) return;
+      auto methods = methods_arg(call, "request_method");
+      if (methods.empty()) methods.push_back("ANY");
+      for (const auto& m : methods) {
+        RouteFact r;
+        r.framework = "pyramid";
+        r.method = m;
+        r.path = "";
+        r.registrar = *rn;
+        r.scope = scope();
+        r.pos = ts::start_pos(call);
+        r.confidence = "recognized";
+        r.has_handler = true;
+        r.handler = handler_ref(view);
+        out_.routes.push_back(std::move(r));
+      }
+      return;
+    }
+    // Flask: app.add_url_rule('/x', 'endpoint', view_func) / view_func=View.as_view('name')
+    if (last == "add_url_rule" && !args.empty()) {
+      auto rule = string_value(args[0]);
+      TSNode view = keyword_arg(call, "view_func");
+      if (!view.id && args.size() >= 3) view = args[2];
+      if (!rule || !view.id) return;
+      auto methods = methods_arg(call, "methods");
+      bool class_view = is(view, "call");
+      if (methods.empty()) methods.push_back(class_view ? "ANY" : "GET");
+      auto known = routers_.find(receiver);
+      for (const auto& m : methods) {
+        RouteFact r;
+        r.framework = known != routers_.end() ? known->second : "flask";
+        r.method = m;
+        r.path = *rule;
+        r.registrar = receiver;
+        r.scope = scope();
+        r.pos = ts::start_pos(call);
+        r.confidence = known != routers_.end() ? "recognized" : "heuristic";
+        r.has_handler = true;
+        r.handler = handler_ref(view);
+        out_.routes.push_back(std::move(r));
+      }
+    }
   }
 
   // ---- assignments and type hints ---------------------------------------------
@@ -494,6 +815,10 @@ class PyExtractor {
       bool class_body = symbol(sc).kind == "class";
       add_hint(sc, name, type, sc == 0 ? "module" : (class_body ? "field" : "local"));
       on_router_assignment(name, right, n);
+      if (is(right, "list") || is(right, "tuple")) {
+        lists_[name] = right;
+        if (sc == 0 && imported_.count("web")) webpy_urls(right, name);
+      }
     } else if (is(left, "attribute") && is(field(left, "object"), "identifier") && text(field(left, "object")) == "self") {
       int cls = enclosing_class();
       if (type == "?" && is(right, "identifier")) type = local_type(sc, std::string(text(right)));  // self.x = param
@@ -529,6 +854,22 @@ class PyExtractor {
     return "?";
   }
 
+  // web.py: urls = ('/', 'index', '/view/(\d+)', 'view')  -- path, class name, ...
+  void webpy_urls(TSNode tuple, const std::string& name) {
+    std::vector<TSNode> items;
+    uint32_t c = ts_node_named_child_count(tuple);
+    for (uint32_t i = 0; i < c; ++i) items.push_back(ts_node_named_child(tuple, i));
+    if (items.size() < 2 || items.size() % 2 != 0) return;
+    for (size_t i = 0; i + 1 < items.size(); i += 2) {
+      auto p = string_value(items[i]);
+      auto cls = string_value(items[i + 1]);
+      if (!p || !cls || p->empty() || ((*p)[0] != '/' && (*p)[0] != '^')) return;
+    }
+    for (size_t i = 0; i + 1 < items.size(); i += 2) {
+      add_list_route("webpy", "ANY", *string_value(items[i]), items[i + 1], name, items[i], true);
+    }
+  }
+
   void on_for(TSNode n) {
     TSNode left = field(n, "left");
     if (is(left, "identifier")) add_hint(scope(), std::string(text(left)), "?", "local");
@@ -559,6 +900,9 @@ class PyExtractor {
       r.framework = "fastapi";
       TSNode p = keyword_arg(value, "prefix");
       if (p.id) r.prefix = string_value(p).value_or("");
+    } else if (last == "Bottle") {
+      r.kind = "app";
+      r.framework = "bottle";
     } else {
       return;
     }
@@ -577,6 +921,9 @@ class PyExtractor {
     std::vector<RefFact> wrappers;
     for (TSNode d : decorators(fn)) {
       TSNode e = ts_node_named_child(d, 0);
+      if (is(e, "call") && is(field(e, "function"), "identifier") && bare_route_decorator(d, e, handler, routes)) {
+        continue;
+      }
       if (is(e, "call") && is(field(e, "function"), "attribute")) {
         TSNode f = field(e, "function");
         std::string registrar(text(field(f, "object")));
@@ -588,6 +935,7 @@ class PyExtractor {
         auto known = routers_.find(registrar);
         if (verb == "route" || verb == "api_route") {
           framework = known != routers_.end() ? known->second : "flask";
+          methods = methods_arg(e, "method");  // Bottle: method='POST'
           TSNode m = keyword_arg(e, "methods");
           if (is(m, "list") || is(m, "tuple")) {
             uint32_t c = ts_node_named_child_count(m);
@@ -636,6 +984,51 @@ class PyExtractor {
       r.middleware = wrappers;
       out_.routes.push_back(std::move(r));
     }
+  }
+
+  // Bottle: @route('/x', method='POST'), @get('/x'); Pyramid: @view_config(route_name='x', request_method='GET')
+  bool bare_route_decorator(TSNode d, TSNode e, int handler, std::vector<RouteFact>& routes) {
+    std::string name(text(field(e, "function")));
+    auto args = positional_args(e);
+    std::vector<std::string> methods;
+    std::string framework, path, registrar = name;
+    if (name == "view_config") {
+      TSNode rn = keyword_arg(e, "route_name");
+      auto route_name = rn.id ? string_value(rn) : std::nullopt;
+      if (!route_name) return false;
+      framework = "pyramid";
+      registrar = *route_name;
+      methods = methods_arg(e, "request_method");
+      if (methods.empty()) methods.push_back("ANY");
+    } else if (imported_.count("bottle") && (name == "route" || name == "get" || name == "post" || name == "put" ||
+                                              name == "delete" || name == "patch")) {
+      auto p = args.empty() ? std::nullopt : string_value(args[0]);
+      if (!p) return false;
+      framework = "bottle";
+      path = *p;
+      methods = name == "route" ? methods_arg(e, "method") : std::vector<std::string>{upper(name)};
+      if (methods.empty()) methods.push_back("GET");
+    } else {
+      return false;
+    }
+    for (const auto& m : methods) {
+      RouteFact r;
+      r.framework = framework;
+      r.method = m;
+      r.path = path;
+      r.registrar = registrar;
+      r.scope = scope_of_definition();
+      r.pos = ts::start_pos(d);
+      r.confidence = "recognized";
+      r.has_handler = true;
+      r.handler.kind = "inline";
+      r.handler.name = symbol(handler).name;
+      r.handler.symbol = handler;
+      r.handler.text = symbol(handler).qualified_name;
+      r.handler.pos = ts::start_pos(d);
+      routes.push_back(std::move(r));
+    }
+    return true;
   }
 
   int scope_of_definition() const {
@@ -749,7 +1142,119 @@ class PyExtractor {
     out_.exceptions.push_back(std::move(f));
   }
 
+  // ---- dispatch on the request path (http.server handlers, WSGI apps) ---------
+
+  void path_literals(TSNode n, std::vector<std::string>& paths, std::vector<std::string>& methods, int depth) const {
+    if (!n.id || depth > 8) return;
+    if (auto s = string_value(n)) {
+      if (route_util::names_resource(*s)) paths.push_back(*s);
+      else if (auto m = route_util::http_method_name(*s)) methods.push_back(*m);
+      return;
+    }
+    if (is(n, "lambda") || is(n, "block")) return;
+    uint32_t c = ts_node_named_child_count(n);
+    for (uint32_t i = 0; i < c; ++i) path_literals(ts_node_named_child(n, i), paths, methods, depth + 1);
+  }
+
+  std::optional<RefFact> branch_handler(TSNode body) const {
+    std::optional<RefFact> first, preferred;
+    std::vector<TSNode> stack{body};
+    int visited = 0;
+    while (!stack.empty() && visited < 200 && !preferred) {
+      TSNode n = stack.back();
+      stack.pop_back();
+      ++visited;
+      if ((is(n, "if_statement") || is(n, "elif_clause") || is(n, "else_clause")) && ts::node_id(n) != ts::node_id(body)) continue;
+      if (is(n, "lambda") || is(n, "function_definition")) continue;
+      if (is(n, "call")) {
+        TSNode f = field(n, "function");
+        RefFact ref;
+        ref.pos = ts::start_pos(n);
+        ref.text = ts::short_text(f, src_);
+        std::string name;
+        if (is(f, "identifier")) {
+          name = std::string(text(f));
+          ref.kind = std::isupper(static_cast<unsigned char>(name[0])) ? "class" : "identifier";
+          ref.name = name;
+        } else if (is(f, "attribute")) {
+          name = std::string(text(field(f, "attribute")));
+          TSNode obj = field(f, "object");
+          ref.name = name;
+          if (is(obj, "identifier") && (text(obj) == "self" || text(obj) == "cls")) {
+            ref.kind = "method_ref";
+            ref.receiver = "this";
+          } else if (dotted(obj)) {
+            ref.kind = "member";
+            ref.receiver = std::string(text(obj));
+          }
+        }
+        if (!ref.kind.empty() && !route_util::is_noise_call(name) && !kBuiltins.count(name)) {
+          if (route_util::is_handler_like(name)) preferred = ref;
+          else if (!first) first = ref;
+        }
+      }
+      uint32_t c = ts_node_named_child_count(n);
+      for (uint32_t i = c; i-- > 0;) stack.push_back(ts_node_named_child(n, i));
+    }
+    return preferred ? preferred : first;
+  }
+
+  void add_dispatch_routes(const std::vector<std::string>& paths, std::vector<std::string> methods, TSNode at,
+                           const RefFact& handler) {
+    if (methods.empty()) methods.push_back("ANY");
+    std::string fn = scope() > 0 ? symbol(scope()).name : "(module)";
+    for (const auto& p : paths) {
+      for (const auto& m : methods) {
+        RouteFact r;
+        r.framework = "dispatch";
+        r.method = m;
+        r.path = p;
+        r.registrar = fn;
+        r.scope = scope();
+        r.pos = ts::start_pos(at);
+        r.confidence = "heuristic";
+        r.note = "branch on the request path in " + fn + "()";
+        r.has_handler = true;
+        r.handler = handler;
+        out_.routes.push_back(std::move(r));
+      }
+    }
+  }
+
+  // if self.path == "/users": self.list_users()  /  elif path.startswith("/orders"): ...
+  void on_if_dispatch(TSNode n) {
+    TSNode cond = field(n, "condition");
+    if (!route_util::mentions_request(text(cond))) return;
+    std::vector<std::string> paths, methods;
+    path_literals(cond, paths, methods, 0);
+    if (paths.empty() || paths.size() > 4) return;
+    auto handler = branch_handler(field(n, "consequence"));
+    if (handler) add_dispatch_routes(paths, methods, n, *handler);
+  }
+
+  // match self.path: case "/users": ...
+  void on_match_dispatch(TSNode n) {
+    TSNode subject = field(n, "subject");
+    if (!route_util::mentions_request(text(subject))) return;
+    TSNode body = field(n, "body");
+    uint32_t c = body.id ? ts_node_named_child_count(body) : 0;
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode clause = ts_node_named_child(body, i);
+      if (!is(clause, "case_clause")) continue;
+      std::vector<std::string> paths, methods;
+      uint32_t k = ts_node_named_child_count(clause);
+      for (uint32_t j = 0; j < k; ++j) {
+        TSNode part = ts_node_named_child(clause, j);
+        if (is(part, "case_pattern")) path_literals(part, paths, methods, 0);
+      }
+      if (paths.empty()) continue;
+      auto handler = branch_handler(field(clause, "consequence"));
+      if (handler) add_dispatch_routes(paths, {}, clause, *handler);
+    }
+  }
+
   void on_if(TSNode n) {
+    on_if_dispatch(n);
     if (scope() != 0) return;
     TSNode cond = field(n, "condition");
     if (!is(cond, "comparison_operator")) return;

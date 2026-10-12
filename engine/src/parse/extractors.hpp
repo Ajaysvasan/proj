@@ -25,9 +25,11 @@ void extract_javascript(const ExtractInput& in, FileFacts& out);  // JavaScript,
 void extract_python(const ExtractInput& in, FileFacts& out);
 void extract_java(const ExtractInput& in, FileFacts& out);
 void extract_cpp(const ExtractInput& in, FileFacts& out);         // C and C++
+void extract_xml(const ExtractInput& in, FileFacts& out);         // configuration XML
+void extract_yaml(const ExtractInput& in, FileFacts& out);        // configuration YAML
 
-// Bumped whenever an extractor's output changes, so a future incremental
-// refresh can tell which files must be re-extracted.
+// Bumped whenever an extractor's output changes, so `proj refresh` re-extracts
+// the files of that language.
 int extractor_version(Language lang);
 
 // Creates the module symbol (symbols[0]) that owns top-level code.

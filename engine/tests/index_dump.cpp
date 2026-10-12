@@ -31,14 +31,15 @@ std::vector<std::string> canonical_dump(db::Database& db) {
   collect(db, "symbol",
           "SELECT " + sym_key("s.id") + " || '|' || s.end_line || ':' || s.end_col || '|' || " + c(sym_key("s.parent_id")) +
               " || '|' || s.exported || s.is_static || s.is_definition || '|' || " + c("s.visibility") + " || '|' || " +
-              c("s.param_count") + " || '|' || " + c("s.container") + " || '|' || " + c("s.signature") + " FROM symbols s",
+              c("s.param_count") + " || '|' || " + c("s.container") + " || '|' || " + c("s.signature") + " || '|' || " +
+              c("s.param_types") + " FROM symbols s",
           out);
   collect(db, "edge",
           "SELECT e.kind || '|' || e.raw_kind || '|' || e.generated || '|' || e.status || '|' || " + file_key("e.file_id") +
               " || ':' || e.line || ':' || e.col || '|' || " + c(sym_key("e.src_symbol_id")) + " || '|' || " +
               c(sym_key("e.dst_symbol_id")) + " || '|' || " + c("e.target_name") + " || '|' || " + c("e.receiver") +
               " || '|' || " + c("e.receiver_kind") + " || '|' || " + c("e.target_text") + " || '|' || " +
-              c("e.arg_count") + " || '|' || " + c("e.note") + " || '|' || " +
+              c("e.arg_count") + " || '|' || " + c("e.arg_types") + " || '|' || " + c("e.note") + " || '|' || " +
               c("(SELECT r.target_text || '@' || r.line || ':' || r.col FROM edges r WHERE r.id = e.receiver_edge_id)") +
               " || '|' || " +
               c("(SELECT group_concat(k, ',') FROM (SELECT " + sym_key("ec.symbol_id") +
@@ -77,6 +78,7 @@ std::vector<std::string> canonical_dump(db::Database& db) {
               " || '|' || r.mount_status || '|' || " + file_key("r.file_id") + " || ':' || r.line || ':' || r.col || '|' || " +
               c("r.registrar") + " || '|' || " + c(sym_key("r.handler_symbol_id")) + " || '|' || r.handler_status || '|' || " +
               c("r.handler_note") + " || '|' || r.confidence || '|' || (r.origin_route_id IS NOT NULL) || '|' || " +
+              "r.raw_method || '|' || " +
               c("(SELECT " + file_key("m.file_id") + " || ':' || m.line FROM mounts m WHERE m.id = r.mount_id)") +
               " || '|' || " + c(sym_key("r.scope_symbol_id")) + " FROM routes r",
           out);

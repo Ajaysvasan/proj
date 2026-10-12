@@ -48,6 +48,13 @@ proj_fetch(proj_ts_cpp
 proj_fetch(proj_ts_c
   https://github.com/tree-sitter/tree-sitter-c/archive/refs/tags/v0.24.1.tar.gz
   25dd4bb3dec770769a407e0fc803f424ce02c494a56ce95fedc525316dcf9b48)
+# Configuration files (servlet descriptors, Struts/Spring XML, route YAML).
+proj_fetch(proj_ts_xml
+  https://github.com/tree-sitter-grammars/tree-sitter-xml/archive/refs/tags/v0.7.0.tar.gz
+  4330a6b3685c2f66d108e1df0448eb40c468518c3a66f2c1607a924c262a3eb9)
+proj_fetch(proj_ts_yaml
+  https://github.com/tree-sitter-grammars/tree-sitter-yaml/archive/refs/tags/v0.7.2.tar.gz
+  aeaff5731bb8b66c7054c8aed33cd5edea5f4cd2ac71654f3f6c2ba2073d8fac)
 
 # --- SQLite (amalgamation) ---------------------------------------------------
 add_library(proj_sqlite3 STATIC ${proj_sqlite_SOURCE_DIR}/sqlite3.c)
@@ -94,7 +101,11 @@ add_library(proj_grammars STATIC
   ${proj_ts_java_SOURCE_DIR}/src/parser.c
   ${proj_ts_cpp_SOURCE_DIR}/src/parser.c
   ${proj_ts_cpp_SOURCE_DIR}/src/scanner.c
-  ${proj_ts_c_SOURCE_DIR}/src/parser.c)
+  ${proj_ts_c_SOURCE_DIR}/src/parser.c
+  ${proj_ts_xml_SOURCE_DIR}/xml/src/parser.c
+  ${proj_ts_xml_SOURCE_DIR}/xml/src/scanner.c
+  ${proj_ts_yaml_SOURCE_DIR}/src/parser.c
+  ${proj_ts_yaml_SOURCE_DIR}/src/scanner.c)
 target_compile_options(proj_grammars PRIVATE -w)
 # The TypeScript scanners include ../../common/scanner.h, which in turn
 # includes "tree_sitter/parser.h" from the grammar's own src directory.
@@ -102,6 +113,9 @@ set_source_files_properties(${proj_ts_typescript_SOURCE_DIR}/typescript/src/scan
   PROPERTIES INCLUDE_DIRECTORIES ${proj_ts_typescript_SOURCE_DIR}/typescript/src)
 set_source_files_properties(${proj_ts_typescript_SOURCE_DIR}/tsx/src/scanner.c
   PROPERTIES INCLUDE_DIRECTORIES ${proj_ts_typescript_SOURCE_DIR}/tsx/src)
+# Same layout for the XML scanner (../../common/scanner.h).
+set_source_files_properties(${proj_ts_xml_SOURCE_DIR}/xml/src/scanner.c
+  PROPERTIES INCLUDE_DIRECTORIES ${proj_ts_xml_SOURCE_DIR}/xml/src)
 
 # --- Catch2 (tests only) -----------------------------------------------------
 if(PROJ_BUILD_TESTS)

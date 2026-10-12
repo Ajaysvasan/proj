@@ -3,7 +3,14 @@
 // Extracts #include directives, namespaces, classes/structs/unions/enums,
 // function and method definitions and declarations (including out-of-line
 // `A::f()` definitions), declared types of parameters, locals and fields,
-// calls, `new` expressions, throw/try/catch, and `main` entry points.
+// calls, `new` expressions, throw/try/catch, `main` entry points, and HTTP
+// routes registered without annotations: registration calls
+// (svr.Get("/x", h), Routes::Get(r, "/x", Routes::bind(&Api::f, this)),
+// CROW_ROUTE(app, "/x")(...), registerHandler, mg_set_request_handler, ...),
+// route tables ({"/x", handler} entries, routes["/x"] = h) and if-dispatch on
+// the request path (if (uri == "/x"), strcmp(path, "/x") == 0).
+#include <algorithm>
+#include <cctype>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -11,6 +18,7 @@
 #include <vector>
 
 #include "parse/extractors.hpp"
+#include "parse/route_util.hpp"
 #include "parse/ts_util.hpp"
 
 namespace proj {
@@ -52,6 +60,8 @@ class CppExtractor {
   std::vector<TryCtx> tries_;
   std::unordered_map<int, std::string> access_;  // class symbol -> current access label
   std::unordered_map<const void*, int> awaiting_receiver_;  // inner call node -> outer call index
+  std::unordered_map<const void*, int> pending_lambda_;     // route handler lambda -> route index
+  std::string http_library_;  // from #include: cpp-httplib, crow, drogon, pistache, mongoose, ...
 
   std::string_view text(TSNode n) const { return ts::text(n, src_); }
   int scope() const { return scopes_.back().symbol; }
@@ -130,6 +140,91 @@ class CppExtractor {
     return count;
   }
 
+  // Declared parameter types as written, without names and default values
+  // ("const std::string&,int*"); the resolver normalizes them.
+  std::string param_types(TSNode fdecl) const {
+    TSNode params = field(fdecl, "parameters");
+    if (!params.id) return "";
+    std::string out;
+    int n = 0;
+    uint32_t c = ts_node_named_child_count(params);
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode p = ts_node_named_child(params, i);
+      std::string t;
+      if (is(p, "variadic_parameter_declaration") || is(p, "variadic_parameter")) {
+        t = "...";
+      } else if (is(p, "parameter_declaration") || is(p, "optional_parameter_declaration")) {
+        if (c == 1 && text(p) == "void") return "";
+        TSNode d = field(p, "declarator");
+        TSNode name = inner_declarator(d);
+        uint32_t end = (is(name, "identifier") || is(name, "field_identifier")) ? ts_node_start_byte(name) : ts_node_end_byte(p);
+        if (is(p, "optional_parameter_declaration")) {
+          TSNode def = field(p, "default_value");
+          if (def.id && (!is(name, "identifier") || ts_node_start_byte(def) < end)) end = ts_node_start_byte(def);
+        }
+        uint32_t start = ts_node_start_byte(p);
+        t = end > start ? std::string(src_.substr(start, end - start)) : "?";
+        // trim and drop a trailing '='
+        while (!t.empty() && (std::isspace(static_cast<unsigned char>(t.back())) || t.back() == '=')) t.pop_back();
+        if (t.find('(') != std::string::npos) t = "?";  // function pointer
+      } else {
+        continue;
+      }
+      out += (n++ ? "," : "") + (t.empty() ? std::string("?") : t);
+    }
+    if (text(params).find("...") != std::string_view::npos && out.find("...") == std::string::npos) {
+      out += (n ? "," : "") + std::string("...");
+    }
+    return out;
+  }
+
+  // Static type of a call argument (see CallFact::arg_types).
+  std::string arg_type(TSNode a) const {
+    while (is(a, "parenthesized_expression") && ts_node_named_child_count(a) > 0) a = ts_node_named_child(a, 0);
+    auto t = ts::type(a);
+    std::string_view v = text(a);
+    if (t == "string_literal" || t == "concatenated_string" || t == "raw_string_literal") return "char*";
+    if (t == "char_literal") return "char";
+    if (t == "true" || t == "false") return "bool";
+    if (t == "nullptr") return "nullptr";
+    if (t == "number_literal") {
+      std::string s(v);
+      for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      bool hex = s.rfind("0x", 0) == 0;
+      if (!hex && (s.find('.') != std::string::npos || s.find('e') != std::string::npos)) {
+        return s.back() == 'f' ? "float" : "double";
+      }
+      bool u = s.find('u') != std::string::npos;
+      size_t longs = static_cast<size_t>(std::count(s.begin(), s.end(), 'l'));
+      if (longs >= 2) return u ? "unsigned long long" : "long long";
+      if (longs == 1) return u ? "unsigned long" : "long";
+      return u ? "unsigned" : "int";
+    }
+    if (t == "new_expression") return std::string(text(field(a, "type"))) + "*";
+    if (t == "cast_expression") return std::string(text(field(a, "type")));
+    if (t == "identifier") return "$" + std::string(v);
+    if (t == "this") return "$this";
+    if (t == "field_expression" && is(field(a, "argument"), "this")) return "$this." + std::string(text(field(a, "field")));
+    return "?";
+  }
+
+  std::string arg_types(TSNode call) const {
+    TSNode args = field(call, "arguments");
+    if (!args.id) return "";
+    std::string out;
+    bool known = false;
+    int n = 0;
+    uint32_t c = ts_node_named_child_count(args);
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode a = ts_node_named_child(args, i);
+      if (is(a, "comment")) continue;
+      std::string t = arg_type(a);
+      if (t != "?") known = true;
+      out += (n++ ? "," : "") + t;
+    }
+    return known ? out : "";
+  }
+
   std::string declarator_name(TSNode d) const {
     d = inner_declarator(d);
     if (is(d, "identifier") || is(d, "field_identifier")) return std::string(text(d));
@@ -157,7 +252,10 @@ class CppExtractor {
     else if (t == "new_expression") on_new(n);
     else if (t == "throw_statement" || t == "throw_expression") on_throw(n);
     else if (t == "try_statement") on_try(n);
-    else if (t == "lambda_expression") return true;
+    else if (t == "lambda_expression") on_lambda(n);
+    else if (t == "initializer_list") on_route_table(n);
+    else if (t == "if_statement") on_if_dispatch(n);
+    else if (t == "assignment_expression") on_route_assignment(n);
     return true;
   }
 
@@ -176,6 +274,13 @@ class CppExtractor {
     imp.system = is(path, "system_lib_string");
     imp.specifier = raw.substr(1, raw.size() - 2);
     imp.pos = ts::start_pos(n);
+    static const std::pair<const char*, const char*> kLibraries[] = {
+        {"httplib", "cpp-httplib"}, {"crow", "crow"},         {"drogon", "drogon"},     {"pistache", "pistache"},
+        {"mongoose", "mongoose"},   {"civetweb", "civetweb"}, {"microhttpd", "libmicrohttpd"},
+        {"cpprest", "cpprestsdk"},  {"oatpp", "oatpp"},       {"Poco/Net", "poco"},     {"boost/beast", "beast"}};
+    for (const auto& [needle, name] : kLibraries) {
+      if (imp.specifier.find(needle) != std::string::npos) http_library_ = name;
+    }
     out_.imports.push_back(std::move(imp));
   }
 
@@ -296,6 +401,7 @@ class CppExtractor {
     auto& s = out_.symbols[static_cast<size_t>(idx)];
     s.is_definition = definition;
     s.param_count = param_count(fdecl);
+    s.param_types = param_types(fdecl);
     s.signature = ts::clip(text(fdecl), 120);
     if (in_class) s.visibility = access_[parent];
     TSNode ret = field(n, "type");
@@ -383,6 +489,7 @@ class CppExtractor {
     std::string name = declarator_name(field(n, "declarator"));
     if (name.empty()) return;
     std::string type(text(field(n, "type")));
+    if (!type.empty() && is(field(n, "declarator"), "pointer_declarator")) type += "*";
     add_hint(sc, name, type.empty() ? "?" : type, "param");
   }
 
@@ -401,11 +508,13 @@ class CppExtractor {
 
   void on_call(TSNode n) {
     TSNode fn = field(n, "function");
+    on_route_call(n);
     CallFact c;
     c.caller = scope();
     c.kind = "calls";
     c.pos = ts::start_pos(n);
     c.arg_count = arg_count(n);
+    c.arg_types = arg_types(n);
     c.text = ts::short_text(fn, src_);
     if (is(fn, "identifier")) {
       c.name = std::string(text(fn));
@@ -466,6 +575,7 @@ class CppExtractor {
     c.pos = ts::start_pos(n);
     c.text = ts::clip("new " + std::string(text(type)));
     c.arg_count = arg_count(n);
+    c.arg_types = arg_types(n);
     auto pos = raw.rfind("::");
     if (pos != std::string::npos) {
       c.receiver = raw.substr(0, pos);
@@ -476,6 +586,414 @@ class CppExtractor {
       c.receiver_kind = "none";
     }
     if (!c.name.empty() && std::isupper(static_cast<unsigned char>(c.name[0]))) out_.calls.push_back(std::move(c));
+  }
+
+  // ---- routes registered in code ------------------------------------------------
+
+  std::optional<std::string> literal(TSNode n) const {
+    if (is(n, "string_literal")) {
+      std::string out;
+      uint32_t c = ts_node_named_child_count(n);
+      for (uint32_t i = 0; i < c; ++i) out += text(ts_node_named_child(n, i));
+      return out;
+    }
+    if (is(n, "raw_string_literal")) {
+      TSNode content = ts::child_of_type(n, "raw_string_content");
+      return std::string(content.id ? text(content) : "");
+    }
+    if (is(n, "concatenated_string")) {
+      std::string out;
+      uint32_t c = ts_node_named_child_count(n);
+      for (uint32_t i = 0; i < c; ++i) {
+        if (auto s = literal(ts_node_named_child(n, i))) out += *s;
+      }
+      return out;
+    }
+    return std::nullopt;
+  }
+
+  std::vector<TSNode> call_args(TSNode call) const {
+    std::vector<TSNode> out;
+    TSNode args = field(call, "arguments");
+    uint32_t c = args.id ? ts_node_named_child_count(args) : 0;
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode a = ts_node_named_child(args, i);
+      if (!is(a, "comment")) out.push_back(a);
+    }
+    return out;
+  }
+
+  // Last name of a callee: svr.Get -> Get, Routes::Get -> Get, app().registerHandler -> registerHandler.
+  std::string callee_name(TSNode fn) const {
+    if (is(fn, "field_expression")) fn = field(fn, "field");
+    if (is(fn, "template_function") || is(fn, "template_method")) fn = field(fn, "name");
+    std::string raw(text(fn));
+    auto sep = raw.rfind("::");
+    return sep == std::string::npos ? raw : raw.substr(sep + 2);
+  }
+
+  static bool all_caps(std::string_view s) {
+    return !s.empty() && std::none_of(s.begin(), s.end(), [](char c) { return std::islower(static_cast<unsigned char>(c)); });
+  }
+
+  // A route handler argument: function name, &function, &Class::method, lambda,
+  // std::bind(&Class::method, this), a handler object (new X, make_shared<X>, X()).
+  std::optional<RefFact> handler_arg(TSNode a, TSNode* lambda) const {
+    while ((is(a, "pointer_expression") || is(a, "parenthesized_expression")) && ts_node_named_child_count(a) > 0) {
+      a = is(a, "pointer_expression") ? field(a, "argument") : ts_node_named_child(a, 0);
+    }
+    RefFact ref;
+    ref.pos = ts::start_pos(a);
+    ref.text = ts::short_text(a, src_);
+    if (is(a, "lambda_expression")) {
+      if (lambda) *lambda = a;
+      ref.kind = "lambda";
+      return ref;
+    }
+    if (is(a, "identifier")) {
+      if (all_caps(text(a))) return std::nullopt;  // a constant or macro, not a function
+      ref.kind = "identifier";
+      ref.name = std::string(text(a));
+      return ref;
+    }
+    if (is(a, "qualified_identifier")) {
+      std::string raw(text(a));
+      auto sep = raw.rfind("::");
+      ref.kind = "member";
+      ref.name = raw.substr(sep + 2);
+      ref.receiver = raw.substr(0, sep);
+      return ref;
+    }
+    if (is(a, "new_expression")) {
+      TSNode type = field(a, "type");
+      ref.kind = "class";
+      ref.name = is(type, "template_type") ? std::string(text(field(type, "name"))) : std::string(text(type));
+      return ref;
+    }
+    if (is(a, "call_expression")) {
+      TSNode fn = field(a, "function");
+      std::string name = callee_name(fn);
+      auto inner = call_args(a);
+      if ((name == "bind" || name == "mem_fn" || name == "bind_front") && !inner.empty()) return handler_arg(inner[0], lambda);
+      if (name == "make_shared" || name == "make_unique") {
+        TSNode tf = is(fn, "qualified_identifier") ? field(fn, "name") : fn;
+        TSNode targs = field(tf, "arguments");
+        if (targs.id && ts_node_named_child_count(targs) > 0) {
+          ref.kind = "class";
+          ref.name = std::string(text(ts_node_named_child(targs, 0)));
+          return ref;
+        }
+      }
+      if (!name.empty() && std::isupper(static_cast<unsigned char>(name[0])) && !all_caps(name)) {
+        ref.kind = "class";  // a handler object constructed in place: UserHandler()
+        ref.name = std::string(text(fn));
+        return ref;
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
+  int add_route(const std::string& framework, const std::string& method, const std::string& path, TSNode at,
+                const std::string& registrar, const std::string& confidence, const std::string& note) {
+    RouteFact r;
+    r.framework = framework;
+    r.method = method;
+    r.path = path;
+    r.registrar = registrar;
+    r.scope = scope();
+    r.pos = ts::start_pos(at);
+    r.confidence = confidence;
+    r.note = note;
+    out_.routes.push_back(std::move(r));
+    return static_cast<int>(out_.routes.size()) - 1;
+  }
+
+  void attach_handler(int route, const RefFact& ref, TSNode lambda) {
+    if (ref.kind == "lambda") {
+      pending_lambda_[ts::node_id(lambda)] = route;
+      return;
+    }
+    auto& r = out_.routes[static_cast<size_t>(route)];
+    r.has_handler = true;
+    r.handler = ref;
+  }
+
+  void on_lambda(TSNode n) {
+    auto it = pending_lambda_.find(ts::node_id(n));
+    if (it == pending_lambda_.end()) return;
+    const auto& r = out_.routes[static_cast<size_t>(it->second)];
+    std::string label = r.method + " " + r.path;
+    int idx = add_symbol(n, label, "route_handler", scope(), true);
+    auto& route = out_.routes[static_cast<size_t>(it->second)];
+    route.has_handler = true;
+    route.handler.kind = "inline";
+    route.handler.name = label;
+    route.handler.symbol = idx;
+    route.handler.text = "lambda";
+    route.handler.pos = ts::start_pos(n);
+    pending_lambda_.erase(it);
+  }
+
+  std::string enclosing_function_name() const {
+    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+      const auto& k = symbol(it->symbol).kind;
+      if (k == "function" || k == "method" || k == "constructor") return symbol(it->symbol).name;
+    }
+    return "(file scope)";
+  }
+
+  std::vector<std::string> methods_in(TSNode n, int depth = 0) const {
+    std::vector<std::string> out;
+    if (!n.id || depth > 4) return out;
+    if (auto s = literal(n)) {
+      if (auto m = route_util::http_method_name(*s)) out.push_back(*m);
+      return out;
+    }
+    if (is(n, "identifier") || is(n, "qualified_identifier") || is(n, "field_expression")) {
+      if (auto m = route_util::http_method_name(text(n))) out.push_back(*m);
+      return out;
+    }
+    uint32_t c = ts_node_named_child_count(n);
+    for (uint32_t i = 0; i < c; ++i) {
+      for (auto& m : methods_in(ts_node_named_child(n, i), depth + 1)) {
+        if (std::find(out.begin(), out.end(), m) == out.end()) out.push_back(m);
+      }
+    }
+    return out;
+  }
+
+  // svr.Get("/x", h); router.add_route("/x", &f); app().registerHandler("/x", h, {Get});
+  // Routes::Get(router, "/x", Routes::bind(&Api::f, this)); server.on("/x", HTTP_GET, h);
+  // CROW_ROUTE(app, "/x")([](){...})
+  void on_route_call(TSNode call) {
+    TSNode fn = field(call, "function");
+    if (is(fn, "call_expression")) {
+      std::string macro = callee_name(field(fn, "function"));
+      if (macro == "CROW_ROUTE" || macro == "CROW_BP_ROUTE") {
+        auto margs = call_args(fn);
+        auto path = margs.size() >= 2 ? literal(margs[1]) : std::nullopt;
+        auto hargs = call_args(call);
+        if (!path || hargs.empty()) return;
+        TSNode lambda{};
+        auto h = handler_arg(hargs[0], &lambda);
+        int r = add_route("crow", "ANY", *path, call, "CROW_ROUTE", "recognized", "");
+        if (h) attach_handler(r, *h, lambda);
+      }
+      return;
+    }
+    std::string name = callee_name(fn);
+    std::string lname;
+    for (char ch : name) lname += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    static const std::unordered_set<std::string> kNames = {
+        "get", "post", "put", "delete", "del", "patch", "options", "head", "route", "add_route", "addroute",
+        "register_route", "registerroute", "registerhandler", "register_handler", "addhandler", "add_handler",
+        "handle", "handlefunc", "on", "map", "bind", "resource", "endpoint", "set_handler", "sethandler",
+        "setrequesthandler", "set_request_handler", "mg_set_request_handler", "add", "support"};
+    std::string receiver = is(fn, "field_expression") ? std::string(text(field(fn, "argument"))) : "";
+    std::string lreceiver;
+    for (char ch : receiver) lreceiver += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    bool table_insert = (lname == "emplace" || lname == "insert" || lname == "try_emplace" || lname == "push_back") &&
+                        (lreceiver.find("route") != std::string::npos || lreceiver.find("handler") != std::string::npos ||
+                         lreceiver.find("dispatch") != std::string::npos || lreceiver.find("endpoint") != std::string::npos);
+    if (!kNames.count(lname) && lname.find("route") == std::string::npos && lname.find("handler") == std::string::npos &&
+        !table_insert) {
+      return;
+    }
+    auto args = call_args(call);
+    std::optional<std::string> path;
+    std::optional<RefFact> handler;
+    TSNode lambda{};
+    std::vector<std::string> methods;
+    for (TSNode a : args) {
+      if (auto s = literal(a)) {
+        if (!path && route_util::is_route_path(*s)) path = s;
+        else if (auto m = route_util::http_method_name(*s)) methods.push_back(*m);
+        continue;
+      }
+      if (auto m = route_util::http_method_name(text(a)); m && !is(a, "call_expression")) {
+        methods.push_back(*m);
+        continue;
+      }
+      if (is(a, "initializer_list")) {
+        for (auto& m : methods_in(a)) methods.push_back(m);
+        continue;
+      }
+      if (path) {
+        TSNode l{};
+        if (auto h = handler_arg(a, &l)) {
+          handler = h;
+          lambda = l;
+        }
+      }
+    }
+    if (!path || !handler) return;
+    if (auto verb = route_util::http_method_name(name); verb && methods.empty()) methods.push_back(*verb);
+    if (methods.empty()) methods.push_back("ANY");
+    bool known = !http_library_.empty();
+    for (const auto& m : methods) {
+      int r = add_route(known ? http_library_ : "cpp_http", m, *path, call, receiver.empty() ? name : receiver,
+                        known ? "recognized" : "heuristic", known ? "" : "registration call " + name + "()");
+      attach_handler(r, *handler, lambda);
+    }
+  }
+
+  // Route tables: { "/users", handle_users }, { "GET", "/users", &Api::list }
+  void on_route_table(TSNode list) {
+    std::optional<std::string> path;
+    std::optional<RefFact> handler;
+    TSNode lambda{};
+    std::vector<std::string> methods;
+    uint32_t c = ts_node_named_child_count(list);
+    if (c < 2 || c > 6) return;
+    for (uint32_t i = 0; i < c; ++i) {
+      TSNode a = ts_node_named_child(list, i);
+      if (is(a, "initializer_list")) return;  // a table, not an entry
+      if (auto s = literal(a)) {
+        if (!path && route_util::is_route_path(*s)) path = s;
+        else if (auto m = route_util::http_method_name(*s)) methods.push_back(*m);
+        continue;
+      }
+      if (auto m = route_util::http_method_name(text(a)); m && (is(a, "identifier") || is(a, "qualified_identifier"))) {
+        methods.push_back(*m);
+        continue;
+      }
+      if (!handler) {
+        TSNode l{};
+        if (auto h = handler_arg(a, &l)) {
+          handler = h;
+          lambda = l;
+        }
+      }
+    }
+    if (!path || !handler) return;
+    std::string table = "route table";
+    for (TSNode p = ts_node_parent(list); p.id; p = ts_node_parent(p)) {
+      if (is(p, "init_declarator")) {
+        table = declarator_name(field(p, "declarator"));
+        break;
+      }
+      if (is(p, "compound_statement") || is(p, "translation_unit")) break;
+    }
+    if (methods.empty()) methods.push_back("ANY");
+    for (const auto& m : methods) {
+      int r = add_route("cpp_table", m, *path, list, table, "heuristic", "entry of " + table);
+      attach_handler(r, *handler, lambda);
+    }
+  }
+
+  // routes["/users"] = handle_users;
+  void on_route_assignment(TSNode n) {
+    TSNode left = field(n, "left");
+    if (!is(left, "subscript_expression")) return;
+    std::optional<std::string> path;
+    uint32_t c = ts_node_named_child_count(left);
+    for (uint32_t i = 0; i < c && !path; ++i) {
+      TSNode part = ts_node_named_child(left, i);
+      if (auto s = literal(part)) path = s;
+      uint32_t k = ts_node_named_child_count(part);
+      for (uint32_t j = 0; j < k && !path; ++j) {
+        if (auto s = literal(ts_node_named_child(part, j))) path = s;
+      }
+    }
+    if (!path || !route_util::is_route_path(*path)) return;
+    TSNode lambda{};
+    auto h = handler_arg(field(n, "right"), &lambda);
+    if (!h) return;
+    std::string table(text(field(left, "argument")));
+    int r = add_route("cpp_table", "ANY", *path, n, table, "heuristic", "entry of " + table);
+    attach_handler(r, *h, lambda);
+  }
+
+  // if (uri == "/users") handle_users(req); else if (strcmp(path, "/orders") == 0) ...
+  void collect_literals(TSNode n, std::vector<std::string>& paths, std::vector<std::string>& methods, int depth) const {
+    if (!n.id || depth > 8) return;
+    if (auto s = literal(n)) {
+      if (route_util::names_resource(*s)) paths.push_back(*s);
+      else if (auto m = route_util::http_method_name(*s)) methods.push_back(*m);
+      return;
+    }
+    if (is(n, "lambda_expression") || is(n, "compound_statement")) return;
+    uint32_t c = ts_node_named_child_count(n);
+    for (uint32_t i = 0; i < c; ++i) collect_literals(ts_node_named_child(n, i), paths, methods, depth + 1);
+  }
+
+  // The handler of a dispatch branch: a call that handles the request (or the
+  // first call that is not logging/output), or a handler object `new X`.
+  std::optional<RefFact> branch_handler(TSNode body) const {
+    std::optional<RefFact> first, preferred;
+    std::vector<TSNode> stack{body};
+    int visited = 0;
+    while (!stack.empty() && visited < 200 && !preferred) {
+      TSNode n = stack.back();
+      stack.pop_back();
+      ++visited;
+      if (is(n, "if_statement") && ts::node_id(n) != ts::node_id(body)) continue;  // a nested dispatch
+      if (is(n, "new_expression")) {
+        TSNode t = field(n, "type");
+        RefFact ref;
+        ref.kind = "class";
+        ref.name = is(t, "template_type") ? std::string(text(field(t, "name"))) : std::string(text(t));
+        ref.text = ts::short_text(n, src_);
+        ref.pos = ts::start_pos(n);
+        if (std::isupper(static_cast<unsigned char>(ref.name.empty() ? 'a' : ref.name[0]))) preferred = ref;
+        continue;
+      }
+      if (is(n, "call_expression")) {
+        TSNode fn = field(n, "function");
+        std::string name = callee_name(fn);
+        if (!route_util::is_noise_call(name) && !name.empty()) {
+          RefFact ref;
+          ref.pos = ts::start_pos(n);
+          ref.text = ts::short_text(fn, src_);
+          if (is(fn, "identifier")) {
+            ref.kind = "identifier";
+            ref.name = name;
+          } else if (is(fn, "qualified_identifier")) {
+            std::string raw(text(fn));
+            ref.kind = "member";
+            ref.name = name;
+            ref.receiver = raw.substr(0, raw.rfind("::"));
+          } else if (is(fn, "field_expression")) {
+            TSNode obj = field(fn, "argument");
+            ref.name = name;
+            if (is(obj, "this")) {
+              ref.kind = "method_ref";
+              ref.receiver = "this";
+            } else {
+              ref.kind = "member";
+              ref.receiver = std::string(text(obj));
+            }
+          }
+          if (!ref.kind.empty()) {
+            if (route_util::is_handler_like(name)) preferred = ref;
+            else if (!first) first = ref;
+          }
+        }
+      }
+      // depth-first, in source order
+      uint32_t c = ts_node_named_child_count(n);
+      for (uint32_t i = c; i-- > 0;) stack.push_back(ts_node_named_child(n, i));
+    }
+    return preferred ? preferred : first;
+  }
+
+  void on_if_dispatch(TSNode n) {
+    TSNode cond = field(n, "condition");
+    if (!route_util::mentions_request(text(cond))) return;
+    std::vector<std::string> paths, methods;
+    collect_literals(cond, paths, methods, 0);
+    if (paths.empty() || paths.size() > 4) return;
+    auto handler = branch_handler(field(n, "consequence"));
+    if (!handler) return;
+    if (methods.empty()) methods.push_back("ANY");
+    std::string fn = enclosing_function_name();
+    for (const auto& p : paths) {
+      for (const auto& m : methods) {
+        int r = add_route("dispatch", m, p, n, fn, "heuristic", "branch on the request path in " + fn + "()");
+        attach_handler(r, *handler, TSNode{});
+      }
+    }
   }
 
   // ---- exceptions ---------------------------------------------------------------

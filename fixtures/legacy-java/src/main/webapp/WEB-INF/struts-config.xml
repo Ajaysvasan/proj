@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE struts-config PUBLIC "-//Apache Software Foundation//DTD Struts Configuration 1.3//EN" "http://struts.apache.org/dtds/struts-config_1_3.dtd">
+<struts-config>
+  <form-beans>
+    <form-bean name="loginForm" type="com.acme.legacy.struts.LoginForm"/>
+  </form-beans>
+  <action-mappings>
+    <action path="/login" type="com.acme.legacy.struts.LoginAction" name="loginForm" scope="request">
+      <forward name="success" path="/WEB-INF/jsp/about.jsp"/>
+    </action>
+    <action path="/admin/users" type="com.acme.legacy.struts.UserDispatchAction" parameter="method"/>
+    <action path="/welcome" forward="/WEB-INF/jsp/about.jsp"/>
+  </action-mappings>
+</struts-config>

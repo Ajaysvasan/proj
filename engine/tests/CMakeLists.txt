@@ -9,7 +9,8 @@ add_executable(proj_engine_tests
   test_index.cpp
   test_refresh.cpp
   test_resolution.cpp
-  test_memory.cpp)
+  test_memory.cpp
+  test_legacy.cpp)
 target_link_libraries(proj_engine_tests PRIVATE proj_core proj_index_dump_lib proj_catch2)
 target_compile_definitions(proj_engine_tests PRIVATE
   PROJ_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../fixtures")

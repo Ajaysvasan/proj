@@ -20,6 +20,8 @@ const TSLanguage* tree_sitter_python();
 const TSLanguage* tree_sitter_java();
 const TSLanguage* tree_sitter_c();
 const TSLanguage* tree_sitter_cpp();
+const TSLanguage* tree_sitter_xml();
+const TSLanguage* tree_sitter_yaml();
 }
 
 namespace proj {
@@ -34,6 +36,8 @@ const TSLanguage* grammar_for(Language lang) {
     case Language::Java: return tree_sitter_java();
     case Language::C: return tree_sitter_c();
     case Language::Cpp: return tree_sitter_cpp();
+    case Language::Xml: return tree_sitter_xml();
+    case Language::Yaml: return tree_sitter_yaml();
     case Language::None: break;
   }
   return nullptr;
@@ -48,6 +52,8 @@ ExtractFn extractor_for(Language lang) {
     case Language::Java: return extract_java;
     case Language::C:
     case Language::Cpp: return extract_cpp;
+    case Language::Xml: return extract_xml;
+    case Language::Yaml: return extract_yaml;
     case Language::None: break;
   }
   return nullptr;
@@ -110,10 +116,12 @@ int extractor_version(Language lang) {
     case Language::JavaScript:
     case Language::TypeScript:
     case Language::Tsx: return 3;
-    case Language::Python: return 3;
-    case Language::Java: return 3;
+    case Language::Python: return 4;
+    case Language::Java: return 4;
     case Language::C:
-    case Language::Cpp: return 3;
+    case Language::Cpp: return 4;
+    case Language::Xml:
+    case Language::Yaml: return 1;
     case Language::None: break;
   }
   return 0;

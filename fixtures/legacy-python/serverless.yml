@@ -1,0 +1,15 @@
+service: pets
+provider:
+  name: aws
+  runtime: python3.11
+functions:
+  listPets:
+    handler: api/handlers.list_pets_handler
+    events:
+      - http:
+          path: pets
+          method: get
+  createPet:
+    handler: api/handlers.create_pet_handler
+    events:
+      - httpApi: "POST /pets"

@@ -90,7 +90,7 @@ describe('proj show', () => {
     assert.match(r.stdout, /needs a terminal/);
     const check = runCli(['show', 'cpp', '--check'], { PROJ_HOME: home });
     assert.equal(check.code, 0, check.stderr);
-    assert.match(check.stdout, /Index integrity for cpp \(schema v2\): ok/);
+    assert.match(check.stdout, /Index integrity for cpp \(schema v3\): ok/);
     assert.match(check.stdout, /edges_with_missing_target/);
   });
 

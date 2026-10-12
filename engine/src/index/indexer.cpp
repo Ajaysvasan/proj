@@ -274,13 +274,15 @@ AnalysisOutcome Indexer::execute(bool incremental) {
             rec.first_error_line = parsed.first_error_line;
             rec.line_count = parsed.line_count;
             rec.module_name = parsed.facts.module_name;
+            // Configuration files (often templated) never make an analysis partial.
+            bool config = is_config_language(e.language);
             if (parsed.status == "parse_failed") {
               rec.note = parsed.message;
-              diags.add({"error", "source", "parse_failed", e.rel_path, 0, parsed.message});
+              diags.add({config ? "info" : "error", "source", "parse_failed", e.rel_path, 0, parsed.message});
             } else {
               have_facts = true;
               if (parsed.status == "syntax_errors") {
-                diags.add({"warn", "source", "syntax_error", e.rel_path, parsed.first_error_line,
+                diags.add({config ? "info" : "warn", "source", "syntax_error", e.rel_path, parsed.first_error_line,
                            std::to_string(parsed.error_count) + " syntax error(s); facts were extracted best-effort"});
               }
               if (parsed.facts.depth_limited) {
@@ -381,13 +383,24 @@ AnalysisOutcome Indexer::execute(bool incremental) {
                    std::to_string(pending) + " relationships were left in the pending state"});
       }
 
-      int64_t parsed_ok = by_status.value("parsed", 0);
-      int64_t syntax = by_status.value("syntax_errors", 0);
-      int64_t failed = by_status.value("parse_failed", 0);
-      int64_t skipped = by_status.value("too_large", 0) + by_status.value("binary", 0) +
-                        by_status.value("unreadable", 0) + by_status.value("symlink", 0);
+      // Configuration files (XML, YAML) are counted separately: their syntax
+      // errors and skipped files are reported but do not make a run partial.
+      json config_status = json::object();
+      {
+        auto st = db.prepare("SELECT status, COUNT(*) FROM files WHERE language IN ('xml','yaml') GROUP BY status");
+        while (st.step()) config_status[st.text(0)] = st.int64(1);
+      }
+      auto code = [&](const char* status) { return by_status.value(status, 0) - config_status.value(status, 0); };
+      int64_t parsed_ok = code("parsed");
+      int64_t syntax = code("syntax_errors");
+      int64_t failed = code("parse_failed");
+      int64_t skipped = code("too_large") + code("binary") + code("unreadable") + code("symlink");
+      int64_t config_parsed = config_status.value("parsed", 0) + config_status.value("syntax_errors", 0);
+      source_attempted -= config_status.value("parsed", 0) + config_status.value("syntax_errors", 0) +
+                          config_status.value("parse_failed", 0) + config_status.value("binary", 0) +
+                          config_status.value("unreadable", 0);
       counts.files_discovered = files_total;
-      counts.files_parsed = parsed_ok + syntax;
+      counts.files_parsed = parsed_ok + syntax + config_parsed;
       counts.files_skipped = skipped;
       counts.symbols = symbols;
       counts.relationships = all_edges + deps;
@@ -413,6 +426,11 @@ AnalysisOutcome Indexer::execute(bool incremental) {
                  {"skipped", skipped},
                  {"unsupported", by_status.value("unsupported", 0)},
                  {"excluded", by_status.value("excluded", 0)},
+                 {"config",
+                  {{"parsed", config_status.value("parsed", 0)},
+                   {"with_syntax_errors", config_status.value("syntax_errors", 0)},
+                   {"skipped", config_status.value("too_large", 0) + config_status.value("binary", 0) +
+                                   config_status.value("unreadable", 0) + config_status.value("parse_failed", 0)}}},
                  {"by_status", by_status},
                  {"by_language", by_language}}},
                {"directories",

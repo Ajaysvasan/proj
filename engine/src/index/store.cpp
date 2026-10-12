@@ -17,13 +17,14 @@ FactWriter::FactWriter(db::Database& db)
                               "extractor_version = ?, note = ? WHERE id = ?")),
       symbol_(db.prepare("INSERT INTO symbols(file_id, parent_id, name, qualified_name, kind, language, start_line, "
                          "start_col, end_line, end_col, exported, visibility, is_static, is_definition, param_count, "
-                         "container, signature) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")),
+                         "container, signature, param_types) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")),
       symbol_with_id_(db.prepare("INSERT INTO symbols(file_id, parent_id, name, qualified_name, kind, language, "
                                  "start_line, start_col, end_line, end_col, exported, visibility, is_static, "
-                                 "is_definition, param_count, container, signature, id) "
-                                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")),
+                                 "is_definition, param_count, container, signature, param_types, id) "
+                                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")),
       edge_(db.prepare("INSERT INTO edges(kind, raw_kind, src_symbol_id, file_id, line, col, status, target_name, "
-                       "receiver, receiver_kind, target_text, arg_count) VALUES (?1,?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10)")),
+                       "receiver, receiver_kind, target_text, arg_count, arg_types) "
+                       "VALUES (?1,?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10,?11)")),
       dep_(db.prepare("INSERT INTO file_deps(src_file_id, scope_symbol_id, kind, specifier, line, col, status, note, raw_note) "
                       "VALUES (?1,?2,?3,?4,?5,?6,'pending',?7,?7)")),
       binding_(db.prepare("INSERT INTO bindings(file_id, dep_id, local_name, imported_name, kind, line, raw_imported, "
@@ -38,8 +39,8 @@ FactWriter::FactWriter(db::Database& db)
                         "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending',?13,?13)")),
       route_(db.prepare("INSERT INTO routes(framework, method, path, full_path, declared_prefix, mount_status, file_id, "
                         "line, col, registrar, scope_symbol_id, handler_kind, handler_name, handler_receiver, "
-                        "handler_text, handler_symbol_id, handler_status, handler_note, confidence, raw_handler_note) "
-                        "VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?17)")),
+                        "handler_text, handler_symbol_id, handler_status, handler_note, confidence, raw_handler_note, "
+                        "raw_method) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?17,?2)")),
       middleware_(db.prepare("INSERT INTO route_middleware(route_id, position, scope, ref_kind, name, receiver, text, "
                              "symbol_id, status, file_id, line) VALUES (?,?,'route',?,?,?,?,?,?,?,?)")),
       exception_(db.prepare("INSERT INTO exceptions(kind, type_name, expression, symbol_id, file_id, line, col, "
@@ -104,8 +105,8 @@ WriteCounts FactWriter::write_facts(int64_t file_id, const std::string& language
     st.bind(11, s.exported).bind_text_or_null(12, s.visibility).bind(13, s.is_static);
     st.bind(14, s.is_definition);
     if (s.param_count >= 0) st.bind(15, s.param_count); else st.bind(15, nullptr);
-    st.bind_text_or_null(16, s.container).bind_text_or_null(17, s.signature);
-    if (reuse >= 0) st.bind(18, reuse);
+    st.bind_text_or_null(16, s.container).bind_text_or_null(17, s.signature).bind_text_or_null(18, s.param_types);
+    if (reuse >= 0) st.bind(19, reuse);
     st.run();
     sym_ids[i] = reuse >= 0 ? reuse : db_.last_insert_rowid();
     if (reuse >= 0 && reused) reused->push_back(reuse);
@@ -120,6 +121,7 @@ WriteCounts FactWriter::write_facts(int64_t file_id, const std::string& language
     edge_.bind_text_or_null(6, c.name).bind_text_or_null(7, c.receiver).bind_text_or_null(8, c.receiver_kind);
     edge_.bind_text_or_null(9, c.text);
     if (c.arg_count >= 0) edge_.bind(10, c.arg_count); else edge_.bind(10, nullptr);
+    edge_.bind_text_or_null(11, c.arg_types);
     edge_.run();
     call_ids.push_back(db_.last_insert_rowid());
   }
@@ -138,7 +140,7 @@ WriteCounts FactWriter::write_facts(int64_t file_id, const std::string& language
     std::string qualifier = dot == std::string::npos ? "" : h.base.substr(0, h.base[dot] == ':' ? dot - 1 : dot);
     edge_.bind(1, h.kind).bind(2, sym(h.symbol)).bind(3, file_id).bind(4, h.pos.line).bind(5, h.pos.col);
     edge_.bind(6, simple).bind_text_or_null(7, qualifier).bind(8, qualifier.empty() ? "none" : "qualified");
-    edge_.bind(9, h.base).bind(10, nullptr);
+    edge_.bind(9, h.base).bind(10, nullptr).bind(11, nullptr);
     edge_.run();
   }
 
@@ -200,7 +202,9 @@ WriteCounts FactWriter::write_facts(int64_t file_id, const std::string& language
       if (h.kind == "inline" && h.symbol >= 0) {
         route_.bind(15, sym(h.symbol)).bind(16, "resolved").bind(17, "inline handler");
       } else {
-        route_.bind(15, nullptr).bind(16, "pending").bind_text_or_null(17, h.wrapper.empty() ? "" : "wrapped by " + h.wrapper);
+        std::string note = h.wrapper.empty() ? "" : "wrapped by " + h.wrapper;
+        if (!r.note.empty()) note = note.empty() ? r.note : note + "; " + r.note;
+        route_.bind(15, nullptr).bind(16, "pending").bind_text_or_null(17, note);
       }
     } else {
       route_.bind(11, nullptr).bind(12, nullptr).bind(13, nullptr).bind(14, nullptr).bind(15, nullptr);

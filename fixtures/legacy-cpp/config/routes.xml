@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Routes loaded by the C++ gateway at startup. -->
+<routes>
+  <route path="/v2/reports" method="GET" handler="reports::ReportHandler"/>
+  <route path="/v2/export" handler="reports::ExportHandler"/>
+</routes>

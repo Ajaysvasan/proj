@@ -60,7 +60,8 @@ CREATE TABLE symbols (
   is_definition INTEGER NOT NULL DEFAULT 1,
   param_count   INTEGER,
   container     TEXT,
-  signature     TEXT
+  signature     TEXT,
+  param_types   TEXT
 );
 CREATE INDEX symbols_name ON symbols(name, kind);
 CREATE INDEX symbols_name_nocase ON symbols(name COLLATE NOCASE);
@@ -145,7 +146,8 @@ CREATE TABLE edges (
   note          TEXT,
   raw_kind      TEXT NOT NULL,
   generated     INTEGER NOT NULL DEFAULT 0,
-  receiver_edge_id INTEGER REFERENCES edges(id)
+  receiver_edge_id INTEGER REFERENCES edges(id),
+  arg_types     TEXT
 );
 CREATE INDEX edges_src ON edges(src_symbol_id, kind);
 CREATE INDEX edges_dst ON edges(dst_symbol_id, kind);
@@ -217,7 +219,8 @@ CREATE TABLE routes (
   confidence        TEXT NOT NULL,
   declared_prefix   TEXT,
   raw_handler_note  TEXT,
-  origin_route_id   INTEGER REFERENCES routes(id)
+  origin_route_id   INTEGER REFERENCES routes(id),
+  raw_method        TEXT NOT NULL
 );
 CREATE INDEX routes_full_path ON routes(full_path COLLATE NOCASE);
 CREATE INDEX routes_method ON routes(method, full_path);

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +47,7 @@ class Resolver {
     std::string name, kind, qualified_name, container, language;
     int param_count = -1;
     bool is_definition = true;
+    std::string param_types;  // normalized, comma-separated; "" when unknown
   };
 
   struct Value {
@@ -82,6 +84,23 @@ class Resolver {
   // Prepared statements for hot-path queries, keyed by their SQL literal.
   std::unordered_map<const char*, db::Statement> stmt_cache_;
   int type_depth_ = 0;  // recursion guard for @call: type evaluation
+  // Argument types of the call being resolved; cleared while evaluating the
+  // types of other expressions so they never leak into unrelated lookups.
+  struct CallContext {
+    int64_t scope = -1;
+    int arg_count = -1;
+    std::vector<std::string> arg_types;
+  };
+  CallContext call_ctx_;
+  // Narrows same-arity overloads by the static argument types of the current call.
+  std::vector<SymbolInfo> narrow_by_types(const std::vector<SymbolInfo>& cands, std::string* note);
+  std::string arg_static_type(const std::string& token, bool cpp);
+  int type_match(const std::string& arg, const std::string& param, bool cpp);
+  std::vector<std::string> ancestor_names(const std::string& type, bool cpp);
+  // Memoized class lookups for overload scoring (bounded; facts do not change during a pass).
+  int64_t type_class(const std::string& type, bool cpp);
+  std::unordered_map<std::string, int64_t> type_class_cache_;
+  std::unordered_map<int64_t, std::vector<std::string>> ancestors_cache_;
   // Memoized @call: evaluations (bounded; facts do not change during a pass).
   std::unordered_map<std::string, std::pair<int64_t, std::string>> call_type_cache_;
   int64_t call_result_type(int64_t file, int64_t scope, const std::string& spec, std::string* note);
@@ -105,6 +124,7 @@ class Resolver {
   void resolve_route_handlers();
   void resolve_route_middleware();
   void compute_route_prefixes();
+  std::vector<std::pair<std::string, int64_t>> django_prefixes(int64_t file, int depth, std::set<int64_t>& seen);
   void add_manifest_entry_points();
 
   // dependency helpers
@@ -142,6 +162,27 @@ class Resolver {
   Outcome resolve_call(int64_t scope, const std::string& kind, const std::string& name, const std::string& receiver,
                        const std::string& receiver_kind, int arg_count);
 
+  // References by name, from configuration files (web.xml, Struts, Spring XML,
+  // OpenAPI, serverless.yml, route files) and class-based registrations.
+  Outcome config_class(const std::string& ref);  // com.x.Y, pkg.mod.Y, ns::Y, Y
+  Outcome config_member(const std::string& qualified, const std::string& member);  // com.x.Y.m, pkg.mod.f, ns::Y::m
+  Outcome config_function_name(const std::string& name);  // a bare function or method name
+  Outcome config_file(const std::string& path, const std::string& member);  // a source file, optionally a function in it
+  Outcome config_bean(const std::string& id);  // a Spring XML bean
+  // A class named in code (import-aware for Java, scope-aware for Python), else by name.
+  Outcome resolve_class_ref(int64_t file, int64_t scope, const std::string& name);
+
+  // The methods of a handler class that serve a route, using the framework's
+  // dispatch convention (servlet doGet/doPost/service, Struts execute, Spring
+  // handleRequest, Python get/post, Falcon on_get, generic handle/process...).
+  struct DispatchTarget {
+    std::string method;  // HTTP method served
+    int64_t symbol = -1;
+    std::string note;
+  };
+  std::vector<DispatchTarget> dispatch_targets(int64_t cls, const std::string& framework, const std::string& route_method,
+                                               const std::string& explicit_method, std::string* note);
+
  private:
   Outcome resolve_typed_receiver(int64_t scope, const std::string& type, const std::string& name, int arg_count);
   std::string external_base(int64_t cls, int depth);
@@ -159,6 +200,10 @@ class Resolver {
                             const std::string& receiver, const std::string& receiver_kind, int arg_count);
   Outcome resolve_call_cpp(int64_t scope, const std::string& kind, const std::string& name,
                            const std::string& receiver, const std::string& receiver_kind, int arg_count);
+  Outcome resolve_call_config(const std::string& name, const std::string& receiver, const std::string& receiver_kind);
+  // A route handler or middleware reference; `cls` receives the handler class when it is one.
+  Outcome resolve_handler_ref(int64_t file, int64_t scope, const std::string& kind, const std::string& name,
+                              const std::string& receiver, int64_t* cls);
   Outcome value_call(const Value& v, int arg_count, bool instantiate);
   Outcome instantiate(int64_t cls, int arg_count);
   Outcome heuristic(const std::string& name, const std::string& receiver_kind);

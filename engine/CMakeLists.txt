@@ -34,10 +34,13 @@ add_library(proj_core STATIC
   src/parse/extract_python.cpp
   src/parse/extract_java.cpp
   src/parse/extract_cpp.cpp
+  src/parse/extract_config.cpp
   src/index/registry.cpp
   src/index/store.cpp
   src/index/refresh.cpp
   src/index/resolver.cpp
+  src/index/resolver_config.cpp
+  src/index/resolver_overloads.cpp
   src/index/indexer.cpp
   src/query/query.cpp
   src/protocol/protocol.cpp)

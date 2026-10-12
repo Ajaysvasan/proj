@@ -1,0 +1,6 @@
+services:
+  portal:
+    image: acme/portal:1.0
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]

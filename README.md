@@ -10,7 +10,10 @@ for searching and navigating:
 - functions, methods, classes and other declarations, with exact source locations
 - callers and callees as bounded, cycle-safe trees
 - application entry points and how startup reaches route registration
-- HTTP routes (`GET /api/users/:id`), their handler, middleware, mount prefix and call flow
+- HTTP routes (`GET /api/users/:id`), their handler, middleware, mount prefix and call flow,
+  including legacy servers whose endpoints are declared in XML/YAML (web.xml,
+  Struts, Spring XML, OpenAPI, custom route files), registered in code without
+  annotations, or dispatched by hand on the request path
 - explicit `throw`/`raise` sites and recognized `catch`/`except` handlers
 - analysis history, durations and diagnostics
 
@@ -140,12 +143,44 @@ analysis, `4` no supported source files, `130` interrupted. See
 | Language | Declarations | Imports | Calls | Routes | Exceptions | Entry points |
 |---|---|---|---|---|---|---|
 | JavaScript / TypeScript / TSX | yes | ESM, CommonJS | yes | Express-style, NestJS | throw / try | package.json, `listen()` |
-| Python | yes | absolute, relative, star | yes | Flask, FastAPI, Django `path()` | raise / except | `__main__` guard, `__main__.py`, `run()` |
-| Java | yes | single, wildcard, static | yes: overloads, chained calls, static imports | Spring MVC, JAX-RS | throw / catch / throws | `main`, `@SpringBootApplication` |
-| C / C++ | yes | `#include` | yes | none | throw / catch (C++) | `main` |
+| Python | yes | absolute, relative, star | yes | Flask, FastAPI, Django (incl. `include()`, class-based views), Tornado, webapp2, web.py, Falcon, Pyramid, Bottle, `http.server`, path dispatch | raise / except | `__main__` guard, `__main__.py`, `run()` |
+| Java | yes | single, wildcard, static | yes: overloads by argument types, chained calls, static imports | Spring MVC, JAX-RS, servlets (web.xml, `@WebServlet`, `addServlet`), JDK `HttpServer`, Spark/Javalin, Struts, Spring XML, front-controller dispatch | throw / catch / throws | `main`, `@SpringBootApplication`, `web.xml`, `@WebListener` |
+| C / C++ | yes | `#include` | yes, overloads by argument types | cpp-httplib, Crow, Drogon, Pistache, registration calls, route tables, path dispatch | throw / catch (C++) | `main` |
+| XML / YAML (configuration) | Spring beans | | `configures` edges to wired classes | web.xml, Struts 1/2, Spring XML, OpenAPI, serverless.yml, custom path + handler entries | | `web.xml`, route files |
 
 Coverage is partial by design. The detailed constructs and known limitations
 are listed in [docs/LANGUAGE_SUPPORT.md](docs/LANGUAGE_SUPPORT.md).
+
+## Legacy servers
+
+Older back ends rarely use annotation-based frameworks. `proj` also follows:
+
+- **Endpoints declared in configuration.** A `web.xml` servlet mapping
+  becomes one route per HTTP method its class implements (`doGet`,
+  `doPost`, ..., inherited ones included, or `service`), with the mapped
+  filters as middleware in declaration order. Struts actions, Spring XML
+  handler mappings, OpenAPI `operationId`s, `serverless.yml` functions and
+  custom XML/YAML entries that pair a URL with a handler class or function
+  work the same way. A class named in a configuration file is found by its
+  qualified name, and the file links to the classes it wires (`configures`
+  edges). `web.xml` is an entry point, so startup code such as a listener's
+  `contextInitialized` traces back to it.
+- **Endpoints registered in code without annotations.** Servlet containers
+  (`addServlet`/`addMapping`, Jetty, Tomcat), the JDK `HttpServer`, Spark and
+  Javalin, Tornado/webapp2/web.py/Falcon/Pyramid/Bottle handler lists and
+  classes, Django class-based views and `include()`, C/C++ registration
+  calls and route tables. Handler classes are dispatched to their request
+  methods; handler lambdas become symbols that own their calls.
+- **Hand-written dispatchers.** `if`/`switch`/`match` branches that compare
+  the request path with a literal (`"/users".equals(path)`,
+  `self.path == "/pets"`, `strcmp(uri, "/health") == 0`) are `heuristic`
+  routes to the call that handles the branch.
+- **Overloads.** Java and C++ overloads with the same number of parameters
+  are told apart by the static types of the arguments (literals, `new X()`,
+  casts, declared variables), so `find(42L)` and `find("bob")` reach different
+  methods.
+- **Wildcard route search.** `/api/users/42/orders` finds the servlet mapping
+  `/api/users/*`, and `/login.do` finds `*.do`.
 
 ## Results on real repositories
 
@@ -154,13 +189,24 @@ only read; refresh experiments ran on copies.
 
 | Repository | Source files | Analysis | Peak RSS | Call sites | Unresolved | Routes | Entry points |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Apache Kafka | 6,190 Java, 184 Python | 14.7 s | 52.1 MiB | 802,087 | 7.7 % | 45 (JAX-RS) | 169 |
+| Apache Kafka | 6,190 Java, 184 Python, 106 XML/YAML | 14.7 s (see below) | 54.6 MiB | 802,087 | 7.4 % | 49 | 169 |
 | A FastAPI service backend | 115 Python | 0.1 s | 14.2 MiB | 2,823 | 30.8 % | 5 (FastAPI) | 22 |
 
-On Kafka, 88 % of call sites resolve to a project method or are identified as
-external (JDK or library), and 3.7 % are ambiguous with all candidates listed.
-Python has fewer declared types, so more calls on unannotated parameters stay
-unresolved. Each one carries a reason.
+On Kafka, 91 % of call sites resolve to a project method or are identified as
+external (JDK or library), and 1.5 % are ambiguous with all candidates listed;
+choosing overloads by argument types took ambiguous calls from 30,045 to
+12,150. Kafka's 49 routes are its 45 JAX-RS resources, the Jersey containers
+that Kafka Connect and Trogdor register with Jetty at `/*` (3, external), and
+one `http.server` handler in the system tests. Its 106 XML/YAML files
+(build, CI and test configuration) produce no false routes. Python has fewer
+declared types, so more calls on unannotated parameters stay unresolved.
+Each one carries a reason.
+
+The 14.7 s analysis time was measured in the morning with the previous engine.
+Later the same day the machine ran about twice as slow; measured back to back
+then, the current engine took 33 s and the previous one 31 s on Kafka (about
+7 % for argument types and overload scoring), and 14.43 s versus 14.23 s on
+20,000 synthetic files (about 1.4 %, +1 MiB peak memory).
 
 `proj refresh` on a Kafka copy took 2.2 s with no changes and 2.6–4.8 s after
 a method-body edit, a rename plus a new overload plus a duplicate class name,
@@ -218,7 +264,7 @@ on macOS has not been measured; CI only checks that peak memory stays under
 ## Platform status
 
 - **Linux (Fedora 43, x86_64, GCC 15.3, Node 22):** built and fully tested
-  (engine: 62 test cases plus 4 leak checks; CLI: 38 tests).
+  (engine: 71 test cases plus 4 leak checks; CLI: 38 tests).
 - **CI (GitHub Actions; `.github/workflows/ci.yml`):** on Ubuntu with GCC,
   Ubuntu with Clang, and macOS with Apple Clang, every push builds the engine
   with warnings as errors and runs the engine tests, the CLI tests, the

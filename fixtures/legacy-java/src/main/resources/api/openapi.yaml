@@ -1,0 +1,15 @@
+openapi: 3.0.1
+info:
+  title: Acme customers
+  version: "2"
+servers:
+  - url: https://api.acme.example/v2
+paths:
+  /customers/{id}:
+    get:
+      operationId: getCustomer
+      responses:
+        "200": {description: ok}
+  /customers:
+    post:
+      operationId: createCustomer

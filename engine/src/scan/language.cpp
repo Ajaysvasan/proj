@@ -9,7 +9,7 @@
 namespace proj {
 namespace {
 
-constexpr std::array<std::pair<const char*, Language>, 24> kExtensions = {{
+constexpr std::array<std::pair<const char*, Language>, 27> kExtensions = {{
     {".js", Language::JavaScript},  {".mjs", Language::JavaScript}, {".cjs", Language::JavaScript},
     {".jsx", Language::JavaScript}, {".ts", Language::TypeScript},  {".mts", Language::TypeScript},
     {".cts", Language::TypeScript}, {".tsx", Language::Tsx},        {".py", Language::Python},
@@ -19,6 +19,7 @@ constexpr std::array<std::pair<const char*, Language>, 24> kExtensions = {{
     {".cxx", Language::Cpp},        {".c++", Language::Cpp},        {".hpp", Language::Cpp},
     {".hh", Language::Cpp},         {".hxx", Language::Cpp},        {".h++", Language::Cpp},
     {".ipp", Language::Cpp},        {".inl", Language::Cpp},        {".tpp", Language::Cpp},
+    {".xml", Language::Xml},        {".yml", Language::Yaml},       {".yaml", Language::Yaml},
 }};
 
 }  // namespace
@@ -41,6 +42,8 @@ const char* language_name(Language lang) {
     case Language::Java: return "java";
     case Language::C: return "c";
     case Language::Cpp: return "cpp";
+    case Language::Xml: return "xml";
+    case Language::Yaml: return "yaml";
     case Language::None: break;
   }
   return "none";
@@ -48,10 +51,14 @@ const char* language_name(Language lang) {
 
 std::optional<Language> language_from_name(std::string_view name) {
   for (Language l : {Language::JavaScript, Language::TypeScript, Language::Tsx, Language::Python,
-                     Language::Java, Language::C, Language::Cpp}) {
+                     Language::Java, Language::C, Language::Cpp, Language::Xml, Language::Yaml}) {
     if (name == language_name(l)) return l;
   }
   return std::nullopt;
 }
+
+bool is_config_language(Language lang) { return lang == Language::Xml || lang == Language::Yaml; }
+
+bool is_config_language_name(std::string_view name) { return name == "xml" || name == "yaml"; }
 
 }  // namespace proj

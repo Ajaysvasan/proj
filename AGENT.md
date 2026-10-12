@@ -32,7 +32,7 @@ behavior changes.
 
 ```sh
 cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release && cmake --build build/engine --parallel
-ctest --test-dir build/engine --output-on-failure   # 62 test cases + 4 leak checks
+ctest --test-dir build/engine --output-on-failure   # 71 test cases + 4 leak checks
 cd cli && npm ci && npm test                  # 38 tests (unit, client, CLI, UI)
 node bench/run.mjs --sizes 500,2000 --queries 10 --max-rss-mib 64
 ```
@@ -73,6 +73,17 @@ node bench/run.mjs --sizes 500,2000 --queries 10 --max-rss-mib 64
 - Finalization statistics must not use `GROUP BY` over `edges`. SQLite's
   sorter buffers up to the page-cache size, and peak RSS then grew with the
   repository (52 MiB at 50k files instead of 35 MiB).
+- Legacy routing (`[legacy]` tests, `fixtures/legacy-*`): configuration
+  routes and code registrations name handlers by reference; the resolver
+  dispatches handler classes per framework (`resolver_config.cpp`) and may
+  turn one route into one row per HTTP method. Anything it changes on a
+  route must be restorable by refresh (`raw_method`, `origin_route_id`).
+- Dispatch heuristics (`route_util.hpp`) must stay conservative: the
+  condition must mention the request, literals must name a resource, and the
+  branch must contain a handler call. Check new patterns against Kafka for
+  false routes.
+- `for (x : reader.search(...)["routes"])` iterates a destroyed temporary
+  (it bit the legacy tests). Store the json first.
 - `mallinfo2()` counts glibc tcache chunks as in use. The leak tests need
   `GLIBC_TUNABLES=glibc.malloc.tcache_count=0`, which ctest sets.
 

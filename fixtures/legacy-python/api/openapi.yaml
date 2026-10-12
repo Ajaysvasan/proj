@@ -1,0 +1,12 @@
+openapi: 3.0.0
+info:
+  title: Pets
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: api.pets.list_pets
+  /pets/{pet_id}:
+    get:
+      operationId: get_pet
+      x-openapi-router-controller: api.pets

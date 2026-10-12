@@ -2,7 +2,7 @@
 
 Parsing uses Tree-sitter 0.25.10 with these grammars, compiled into the
 engine: JavaScript 0.25.0, TypeScript/TSX 0.23.2, Python 0.25.0, Java 0.23.5,
-C++ 0.23.4, C 0.24.1.
+C++ 0.23.4, C 0.24.1, XML 0.7.0 and YAML 0.7.2 (tree-sitter-grammars).
 
 Tree-sitter provides syntax only. Everything below is what the extractors and
 the resolver derive from that syntax. **None of it is full semantic analysis**:
@@ -23,8 +23,79 @@ guess.
 | `.c` | C |
 | `.h` | **parsed as C++** (works for most C headers) |
 | `.cc .cpp .cxx .c++ .hpp .hh .hxx .h++ .ipp .inl .tpp` | C++ |
+| `.xml` | XML configuration (see [Configuration files](#configuration-files)) |
+| `.yml .yaml` | YAML configuration |
 
 All other files are recorded as `unsupported`. Their content is not read.
+Configuration files are reported separately: their syntax errors (templated
+YAML, for example) and size-limit skips never make an analysis partial.
+
+## Configuration files
+
+Legacy servers often declare endpoints outside the code and name the class
+or function that handles them. `proj` reads these declarations and links them
+to the code:
+
+| Format | Recognized | Handler |
+|---|---|---|
+| `web.xml`, `web-fragment.xml` | `<servlet>` + `<servlet-mapping>` (every `url-pattern`), `<filter>` + `<filter-mapping>` (by URL pattern or servlet name, in declaration order), `<listener>`, `<load-on-startup>`, `<jsp-file>` | the servlet class, dispatched by HTTP method (below); filters become route middleware (`doFilter`) |
+| Struts 1 `struts-config.xml` | `<action path type parameter forward>` | `execute` of the action class; `DispatchAction` with `parameter` is noted as chosen at runtime |
+| Struts 2 `struts.xml` | `<package namespace>` + `<action name class method>` | the named method, else `execute` |
+| Spring XML (`<beans>`) | `<bean id/name class init-method>`, `<property ref>`/`<constructor-arg ref>` wiring, `BeanNameUrlHandlerMapping` (`<bean name="/x.htm">`), `SimpleUrlHandlerMapping` (`<props>`, `<map>`, properties text), `<mvc:view-controller>` | `handleRequest` / `handleRequestInternal` of the bean's class, also for beans declared in another XML file |
+| OpenAPI / Swagger YAML | `paths` × HTTP methods, `operationId`, `x-openapi-router-controller` / `x-swagger-router-controller`, `basePath` / `servers[0].url` | `module.function` (connexion) or a function/method matched by name only (`heuristic`) |
+| `serverless.yml` | `functions.*.handler` with `http` / `httpApi` events (object or `"GET /path"` form) | `dir/module.function`, Java `Class` / `Class::method` |
+| Any other XML or YAML | an element or mapping with a URL path (`path`, `url`, `uri`, `route`, `pattern`, `url-pattern`, `endpoint`, `mapping`) and a code reference (`handler`, `class`, `controller`, `servlet`, `action`, `callback`, `function`, `operationId`, `target`, `bean`, `impl`, ...), optional `method`/`methods`, and `prefix`/`basePath`/`contextPath` on enclosing entries; also maps keyed by path (`/users: com.acme.Users`) | `heuristic` routes |
+
+A code reference may be a Java class (`com.acme.web.UserServlet`,
+`Outer$Inner`), a method (`com.acme.Users#list`, `com.acme.Users.list`), a
+Python dotted path (`app.views.home`, `app.views:home`), a C++ name
+(`api::Users`, `api::Users::list`), a source file (`handlers/users.py`,
+`WEB-INF/jsp/home.jsp`) or `dir/module.function`. Classes are found by exact
+qualified name, then by the end of their qualified name (`app.X` matches
+`src.app.X`), then (for a bare name) by class name. A qualified name whose
+package or module is not part of the project is `external`
+(`org.apache.struts.action.ActionServlet`). JSP pages are recognized but not
+analyzed.
+
+Configuration files also get `configures` edges: from the file (or a Spring
+bean) to each class the container creates (servlets, filters, listeners,
+beans), to lifecycle methods it calls (`contextInitialized` of listeners,
+`init` of `load-on-startup` servlets, bean `init-method`s), and from beans to
+the beans injected into them. `web.xml` is an entry point
+(`deployment_descriptor`), so the startup path of listener code and servlet
+handlers leads back to it; other files that declare routes are `route_config`
+entry points.
+
+**Handler classes.** When a route names a class (in configuration, or in
+code such as `server.createContext("/x", new StatusHandler())`), the resolver
+finds the methods that serve requests, in the class or its project base
+classes, using the framework's convention. A class serving several HTTP
+methods becomes one route per method:
+
+| Framework | Methods |
+|---|---|
+| Servlets (web.xml, `@WebServlet`, `addServlet`) | `doGet`, `doPost`, `doPut`, `doDelete`, `doPatch`, `doHead`, `doOptions`, `doTrace`; else `service` |
+| JDK `HttpServer` | `handle` |
+| Struts 1/2 | `execute` (or the configured method) |
+| Spring XML controllers | `handleRequest`, `handleRequestInternal` |
+| Tornado, webapp2, Django class-based views, Flask `MethodView`, Pyramid | `get`, `post`, ... |
+| Falcon | `on_get`, `on_post`, ... |
+| web.py | `GET`, `POST`, ... |
+| `http.server` | `do_GET`, `do_POST`, ... |
+| Other (configuration files, C/C++, front-controller maps) | `doGet`, `get`, `onGet`, `handleGet`, `on_get`, `do_GET`, `GET`; else `handle`, `handleRequest`, `service`, `execute`, `process`, `onRequest`, `invoke`, `dispatch`, `operator()`, `__call__`, `call`, `run`, `apply` |
+
+A class without any of them is reported as unresolved, with the methods
+that were looked for (a servlet that only inherits `HttpServlet`'s methods,
+for example).
+
+**Dispatch on the request path.** Hand-written dispatchers are recognized as
+`heuristic` routes in all three server languages: `if`/`else if` conditions
+and `switch`/`match` cases that compare the request path (the condition must
+mention `path`, `uri`, `url`, `request`, `action`, `command`, ...) with a
+literal such as `"/users"`. The handler is the first call in the branch that
+handles the request (names containing `handle`, `serve`, `process`,
+`dispatch`, `render`, ...), else the first call that is not logging, output
+or a request accessor. Bare `/` and wildcard-only literals are ignored.
 
 ## JavaScript / TypeScript / TSX
 
@@ -125,9 +196,23 @@ Flask 2 shortcuts `@bp.get(...)`; `Blueprint(url_prefix=...)` and
 `register_blueprint(bp, url_prefix=...)` (the registration prefix overrides the
 blueprint's, as in Flask); FastAPI `@app.get(...)` / `@router.post(...)`,
 `APIRouter(prefix=...)` and `include_router(router, prefix=...)` (both prefixes
-apply); Django `path()`/`re_path()` entries in `urlpatterns` (method `ANY`;
-`include()` prefixes are **not** resolved). Other decorators on a view
-(`@login_required`) are recorded as route middleware.
+apply); Django `path()`/`re_path()`/`url()` entries in `urlpatterns` (method
+`ANY`), with `include('app.urls')` / `include(module)` prefixes resolved
+through any number of URLconfs, and class-based views
+(`View.as_view()`) dispatched to `get`/`post`/...; Flask `add_url_rule`
+(functions and `MethodView.as_view()`); Bottle `@route`/`@get`/... and
+`@app.route(..., method=...)`; Tornado `Application([...])` handler lists
+(tuples, `url(...)`, lists assigned to a variable), webapp2
+`WSGIApplication`; web.py URL tuples naming classes by string; Falcon
+`add_route(path, Resource())`; Pyramid `config.add_route(name, pattern)` with
+`config.add_view(view, route_name=...)` and `@view_config(route_name=...,
+request_method=...)` (the pattern is found in whichever file declares the
+route); `http.server` `HTTPServer(addr, Handler)` (`do_GET`/`do_POST`) and
+`wsgiref` `make_server(host, port, app)`; and `if`/`elif`/`match` dispatch
+on `self.path` or similar (see above). Regular-expression paths are shown
+with named groups as parameters (`^/users/(?P<id>\d+)/?$` →
+`/users/{id}`). Other decorators on a view (`@login_required`) are recorded
+as route middleware.
 
 **Exceptions:** `raise X(...)`, `raise X`, bare `raise` and re-raise of the
 `except ... as e` variable (rethrow). `except` clauses with single, tuple
@@ -140,7 +225,7 @@ Class hierarchies are not used for matching.
 
 **Not supported:** dynamic attribute access, decorators that replace
 functions (other than route registration), metaclasses, `getattr`-based
-dispatch, Django class-based view dispatch beyond the class itself.
+dispatch, Django `include()` of a list (instead of a module), and CherryPy.
 
 ## Java
 
@@ -164,29 +249,52 @@ and so do `var u = repo.find(3)` locals. `new X().m()` and `((X) o).m()` use
 `X`. Untyped lambda parameters shadow outer names and stay unresolved.
 Methods inherited from an external superclass (`extends HashMap`) are
 `external`. When an external base class and a static wildcard import could
-both supply the method, the note names both. Overloads are selected by
-argument count, and remaining ties are recorded as `ambiguous`. Calls on
-interfaces resolve to the interface method, with `overridden_by` edges to
-implementations (possible dynamic dispatch).
+both supply the method, the note names both. Calls on interfaces resolve to
+the interface method, with `overridden_by` edges to implementations
+(possible dynamic dispatch).
+
+**Overloads** are selected by argument count, then by the static types of the
+arguments where they are visible: literals (`"x"` is `String`, `42L` is
+`long`, `null`), `new X()`, casts, and variables, parameters and fields with
+a declared type. Exact matches beat widening (`int` → `long`), boxing
+(`int` → `Integer`) and subtypes (project class hierarchies and common JDK
+types such as `ArrayList` → `List`); overloads whose parameter types cannot
+accept an argument are dropped. If more than one candidate is equally good,
+the call stays `ambiguous` among those.
 
 **Routes:** Spring MVC `@RestController`/`@Controller` with class-level
 `@RequestMapping` and `@GetMapping/@PostMapping/@PutMapping/@DeleteMapping/@PatchMapping`
 or `@RequestMapping(value/path = ..., method = RequestMethod.X)`, including
-multiple paths. JAX-RS `@Path` with `@GET/@POST/...`.
+multiple paths. JAX-RS `@Path` with `@GET/@POST/...`. Without annotations:
+servlets in `web.xml` and Struts/Spring XML (see
+[Configuration files](#configuration-files)), `@WebServlet(urlPatterns)`,
+programmatic servlet registration (`ServletContext.addServlet(...)
+.addMapping(...)`, also through a `ServletRegistration` variable; Jetty
+`addServlet(holder | X.class | "com.x.X", "/path")` and
+`addServletWithMapping`, `ServletHolder` variables; Tomcat `addServlet` +
+`addServletMapping(Decoded)`), the JDK `HttpServer.createContext("/x",
+handler)`, Spark and Javalin `get("/x", ...)` / `app.post("/x", ...)`, handler
+maps of front controllers (`commandMap.put("/login", new LoginCommand())`) and
+`if`/`switch` dispatch on the request path. Handlers may be classes, method
+references (`Users::show`, `this::list`), lambdas (indexed as
+`route_handler` symbols that own the calls inside them), anonymous classes
+(their `handle`/`service`/... method) or variables with a declared type.
 
 **Exceptions:** `throw new X(...)`, rethrow of the catch parameter, multi-catch
 `catch (A | B e)`, `throws` declarations. Local matching is by exact simple
 name or a `catch (Exception|Throwable)`.
 
 **Entry points:** `static void main(String[])`, `@SpringBootApplication`,
-`SpringApplication.run`.
+`SpringApplication.run`, `@WebListener` classes, `web.xml`.
 
 **Not supported:** Spring component scanning and dependency injection wiring
-(startup → controller connections are not traced through the container),
-generics-based resolution (`List<User>` is treated as `List`, so
-`users.get(0).name()` is not followed), lambdas and method references as
-call targets, reflection, annotation processors and Lombok-generated
-members.
+(startup → controller connections are not traced through the container;
+Spring XML `<property ref>` wiring is recorded but not used to type the
+injected field), generics-based resolution (`List<User>` is treated as
+`List`, so `users.get(0).name()` is not followed), lambdas and method
+references as call targets outside route registration, reflection,
+annotation processors, Lombok-generated members, `@WebFilter`, and servlet
+context paths (routes are shown relative to the web application).
 
 ## C and C++
 
@@ -204,8 +312,11 @@ otherwise external. Compiler include paths, `compile_commands.json` and the
 preprocessor are **not** used, and `#ifdef`'d code is all parsed.
 
 **Calls:** unqualified calls (enclosing class first, then functions by name;
-declaration/definition pairs are merged and overloads are filtered by argument
-count); `ns::f()` / `Class::f()`; `obj.f()` / `obj->f()` through declared
+declaration/definition pairs are merged; overloads are selected by argument
+count, then by argument types as in Java: exact match over promotion
+(`char` → `int`, `float` → `double`) over conversion, string literals to
+`std::string`/`string_view`, `nullptr` to pointers, derived to base
+pointers); `ns::f()` / `Class::f()`; `obj.f()` / `obj->f()` through declared
 types of locals, parameters, catch parameters and fields (including `auto x =
 X(...)`, `new X`, `std::make_unique<X>`, and `unique_ptr/shared_ptr<X>`
 members); `this->f()`; `new X`; chained calls (`a.get().size()`) through
@@ -219,14 +330,32 @@ otherwise. `std::` calls and types are external.
 
 **Entry points:** `main` at global scope.
 
+**Routes:** registration calls with a path literal and a handler
+(cpp-httplib `svr.Get("/x", h)`, Pistache `Routes::Get(router, "/x",
+Routes::bind(&Api::f, this))`, Drogon `registerHandler("/x", h, {Get})`,
+civetweb `mg_set_request_handler`, `server.on("/x", HTTP_GET, h)` and any call
+named like `route`, `addRoute`, `registerHandler`, `handle`, ...), Crow
+`CROW_ROUTE(app, "/x")(...)`, route tables (`{"GET", "/users",
+handle_users}` entries in arrays or maps, `routes["/x"] = h`,
+`routes.emplace("/x", h)`), `if` dispatch on the request path
+(`uri == "/x"`, `strcmp(req->path, "/x") == 0`, Poco-style factories
+returning `new XHandler`), and handler classes named in XML/YAML
+configuration. Handlers may be functions, `&Class::method`, `std::bind(...)`,
+lambdas (indexed as `route_handler` symbols) or handler objects (`new X`,
+`std::make_shared<X>()`, `X()`), dispatched by the generic convention above.
+The HTTP library is taken from `#include`s (`httplib.h`, `crow`, `drogon`,
+`pistache`, `mongoose`, `civetweb`, `microhttpd`, `cpprest`, `oatpp`,
+`Poco/Net`, `boost/beast`); other registrations are `heuristic`.
+
 **Classification heuristic:** an out-of-line definition `void Q::f()` is a
 method when `Q` is a class in the same file, a constructor/destructor, or
 starts with an uppercase letter. Otherwise it is a namespace function.
 
-**Not supported:** templates beyond their names, overload resolution by
-types, virtual dispatch beyond `overridden_by` edges between project classes,
-function pointers, macros, ADL, operator overloading as calls, and C++20
-modules. No HTTP routes are extracted for C/C++.
+**Not supported:** templates beyond their names, overload resolution
+involving templates or user-defined conversions, virtual dispatch beyond
+`overridden_by` edges between project classes, function pointers outside
+route tables and registrations, macros (other than `CROW_ROUTE`), ADL,
+operator overloading as calls, and C++20 modules.
 
 ## General limitations
 
@@ -237,6 +366,11 @@ modules. No HTTP routes are extracted for C/C++.
   method has that name (`heuristic`) or 2–5 do (`ambiguous`, all candidates
   listed). Very common method names (`get`, `map`, `find`, …) are never
   matched by name alone.
+- Routes found by heuristics (generic configuration entries, dispatch
+  branches, registration calls outside a recognized library) are labeled
+  `heuristic`. A route whose handler is an overloaded method named without its
+  arguments (a dispatch branch calling `users.find(...)`) is `ambiguous`;
+  the call itself, inside the dispatching function, is resolved precisely.
 - Exception sites in callees are reported as *possible*. Enumerating every
   exception a function can raise is not attempted.
 - Files over 1 MiB (configurable), binary files and symlinks are skipped and

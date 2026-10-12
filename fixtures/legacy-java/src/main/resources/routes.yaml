@@ -1,0 +1,14 @@
+# Routes served by the in-house gateway (custom format).
+gateway:
+  prefix: /gw
+  routes:
+    - path: /invoices
+      method: GET
+      handler: com.acme.legacy.handlers.InvoiceHandler
+    - path: /invoices/{id}
+      methods: [PUT, DELETE]
+      handler: com.acme.legacy.handlers.InvoiceHandler#update
+    - path: /shipments
+      class: com.acme.legacy.handlers.ShipmentHandler
+    - path: /ping
+      handler: com.acme.legacy.handlers.PingHandler

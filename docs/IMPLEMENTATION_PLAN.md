@@ -67,10 +67,23 @@ plus shared registry in the user data directory. Details:
 - [x] Java static imports, external base classes, typed lambda/resource/`instanceof` variables
 - [x] `.gitignore` files of an enclosing Git repository apply when the project is a subdirectory
 
+## Phase 9: Legacy servers
+- [x] XML and YAML parsing (tree-sitter-xml 0.7.0, tree-sitter-yaml 0.7.2); configuration files never make a run partial
+- [x] web.xml servlets, mappings, filters (route middleware), listeners and load-on-startup; Struts 1/2; Spring XML beans, wiring and URL mappings; OpenAPI; serverless.yml; generic path + handler entries
+- [x] Handler classes dispatched per framework (doGet/doPost/service, execute, handleRequest, get/post, on_get, do_GET, handle, ...), one route per HTTP method
+- [x] Java without annotations: `@WebServlet`, `addServlet`/`addMapping` (Servlet API, Jetty, Tomcat), JDK `HttpServer`, Spark/Javalin, handler maps; lambdas and anonymous handler classes
+- [x] Python: Tornado, webapp2, web.py, Falcon, Pyramid, Bottle, Flask `add_url_rule`/`MethodView`, Django `url()`, class-based views and `include()` prefixes, `http.server`, WSGI
+- [x] C/C++: registration calls (cpp-httplib, Crow, Drogon, Pistache, ...), route tables, handler objects, lambdas
+- [x] Dispatch branches (`if`/`switch`/`match` on the request path) in Java, Python and C/C++
+- [x] Overloads selected by static argument types (Java, C++); C++ same-arity overloads no longer merged with declarations
+- [x] Route search with servlet (`/*`) and extension (`*.do`) wildcards
+- [x] Schema v3; refresh equals full analysis on the legacy fixtures (randomized); Clang 22/libc++ `-Werror` build checked locally with Zig's Clang
+- [ ] `@WebFilter`, servlet context paths, Spring XML wiring used for field types, JSON route files
+
 ## Not implemented (by design for the MVP, documented)
 - [ ] `proj remove` (manual steps in the README)
 - [ ] Generics-based resolution (`List<User>` element types)
-- [ ] `tsconfig` path aliases, compiler include paths / `compile_commands.json`, Django `include()` prefixes
+- [ ] `tsconfig` path aliases, compiler include paths / `compile_commands.json`
 - [ ] Parallel parsing (the design allows a worker pool; one worker today)
 
 ## Next milestone

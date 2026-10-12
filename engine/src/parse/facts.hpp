@@ -36,6 +36,9 @@ struct SymbolFact {
   int param_count = -1;   // -1 when unknown or variadic
   std::string container;  // logical owner when it is not the lexical parent (C++ out-of-line methods)
   std::string signature;
+  // Declared parameter types, normalized and comma-separated ("String,int,List");
+  // a variadic last parameter ends with "...". Empty when unknown.
+  std::string param_types;
 };
 
 struct BindingFact {
@@ -64,7 +67,7 @@ struct ExportFact {
 
 struct CallFact {
   int caller = 0;
-  std::string kind;           // calls|instantiates
+  std::string kind;           // calls|instantiates|configures (configuration file -> wired class or method)
   std::string name;           // simple callee name
   std::string receiver;       // receiver expression text, bounded
   // none|this|super|identifier|this_member|qualified|expression|module_require
@@ -73,6 +76,10 @@ struct CallFact {
   std::string receiver_kind;
   std::string text;           // callee expression text, bounded
   int arg_count = -1;
+  // Static types of the arguments when visible at the call site, comma-separated:
+  // a type name (literals, `new X()`, casts), "$name" for a variable whose
+  // declared type the resolver looks up, or "?" when unknown.
+  std::string arg_types;
   Pos pos;
   int receiver_call = -1;  // index into FileFacts::calls when receiver_kind == "call"
 };
@@ -93,7 +100,9 @@ struct InheritFact {
 
 // A reference to code used as a route handler, middleware or mount target.
 struct RefFact {
-  std::string kind;       // identifier|member|inline|require|other
+  // identifier|member|inline|require|other; references by name (configuration
+  // files, class-based registrations): class|qualified|name|file|bean|method_ref
+  std::string kind;
   std::string name;
   std::string receiver;
   std::string text;

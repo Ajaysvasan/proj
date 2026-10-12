@@ -57,7 +57,9 @@ jspm_packages vendor dist build out target .venv venv __pycache__ .mypy_cache
 *.class *.o *.obj *.so *.dylib *.a`.
 
 The summary shows status, duration, file counts (discovered, parsed, with
-syntax errors, failed, skipped, unsupported, excluded), languages, symbols,
+syntax errors, failed, skipped, unsupported, excluded), configuration files
+(XML/YAML parsed, with syntax errors, skipped; these never make an analysis
+partial), languages, symbols,
 relationships, call-resolution breakdown, routes, entry points, exception
 sites, unresolved references, parse problems, peak memory, index path and the
 first diagnostics.
@@ -152,7 +154,9 @@ consistent, 1 otherwise.
   starting with the query, then shorter names. Queries of one or two characters
   match symbol-name prefixes only. `GET /api/users/:id`, `/api/users/42` and
   `users` all match routes; parameters (`:id`, `{id}`, `<int:id>`) match any
-  segment. A query that starts with an HTTP method word (`get`, `post`,
+  segment, servlet wildcards match any number of segments
+  (`/api/users/42/orders` finds `/api/users/*`) and extension mappings match
+  by suffix (`/login.do` finds `*.do`). A query that starts with an HTTP method word (`get`, `post`,
   `delete`, ...) searches routes only. Results show kind, name, `path:line`
   and the qualified name, so duplicate names are distinguishable.
 - **Symbol**: location, parent, visibility, counts of outgoing and incoming

@@ -26,8 +26,12 @@ itself.
 | `scan/` | Safe traversal (no symlinks, depth and file limits), gitignore-style rules, language by extension |
 | `parse/parser.*` | One reusable Tree-sitter parser; per-file time limit; parse status classification |
 | `parse/extract_*.cpp` | Language extractors that produce the shared `FileFacts` representation |
+| `parse/extract_config.cpp` | XML and YAML: one small tree for both, then recognizers for web.xml, Struts 1/2, Spring XML, OpenAPI, serverless.yml and generic path + handler entries |
+| `parse/route_util.hpp` | Shared rules for routes registered without a framework: route-like literals, HTTP method spellings, dispatch-branch handler choice |
 | `index/store.*` | Writes one file's facts with prepared statements; cross-file references stay `pending` |
 | `index/resolver.*` | Resolves dependencies, inheritance, calls (including receiver types and chained calls), routes, mounts and middleware through indexed SQL lookups |
+| `index/resolver_config.cpp` | References by name (classes, `Class#method`, `module.function`, files, beans) and the per-framework dispatch from a handler class to its request methods |
+| `index/resolver_overloads.cpp` | Overload selection by static argument types (Java, C/C++) |
 | `index/refresh.*` | Incremental refresh: change detection, symbol id reuse, affected-set computation, reset of derived rows |
 | `index/indexer.*` | Orchestrates a full run or a refresh; builds a private file and atomically renames it over the old index |
 | `index/registry.*` | Projects, runs and bounded per-run diagnostics |
@@ -133,9 +137,10 @@ first conclusive answer:
 3. **No receiver.** Lexical scope, imports, the enclosing class and its outer
    classes, then language rules (Java single static imports before wildcard
    static imports, C/C++ declarations visible through the include closure).
-4. **Overloads** are filtered by argument count. Remaining ties become
-   `ambiguous`, with every candidate in `edge_candidates`, ordered by file and
-   line.
+4. **Overloads** are filtered by argument count, then by the static types of
+   the arguments (literals, `new X()`, casts, declared variables and fields;
+   exact over widening/boxing/subtype). Remaining ties become `ambiguous`,
+   with every candidate in `edge_candidates`, ordered by file and line.
 5. **Fallback by name.** If exactly one project method has the name, the call
    is `heuristic`. Two to five give `ambiguous`. Otherwise, and always for very
    common names (`get`, `map`, ...), it is `unresolved` with a note naming the
@@ -145,6 +150,37 @@ first conclusive answer:
 Calls whose receiver resolves to a project class but whose method is
 inherited from an external base class (`extends Thread`) are `external`, and
 the note names that base.
+
+## Routes without annotations
+
+Legacy servers declare endpoints in configuration files, register them in
+code without annotations, or dispatch on the request path by hand. The
+extractors turn all of these into ordinary `routes` rows whose handler may be
+a reference by name (`handler_kind` `class`, `qualified`, `name`, `file`,
+`bean`, `method_ref`):
+
+1. **Configuration files** (`parse/extract_config.cpp`): XML and YAML are
+   parsed with Tree-sitter and converted to one tree of named nodes with
+   attributes, text and children. Recognizers for known formats (web.xml,
+   Struts, Spring XML, OpenAPI, serverless.yml) run first; otherwise any
+   entry with a URL path and a code reference becomes a `heuristic` route.
+   They also emit `configures` edges for the classes a container creates.
+2. **Code registrations** in the Java, Python and C/C++ extractors:
+   `addServlet`/`addMapping`, `createContext`, Spark/Javalin, Tornado/web.py/
+   Falcon/Pyramid/Bottle/Django lists and calls, C/C++ registration calls and
+   route tables. Lambdas passed as handlers become `route_handler` symbols.
+3. **Dispatch branches**: `if`/`switch`/`match` on the request path with a
+   handler call in the branch (`heuristic`).
+
+During resolution, a handler that is a class (named in configuration, a
+handler object, a class-based view) is dispatched to its request methods by
+the framework's convention (`doGet`/`doPost`/`service`, `execute`,
+`handleRequest`, `get`/`post`, `on_get`, `do_GET`, `handle`, ...), searched
+in the class and its project base classes. A class serving several HTTP
+methods becomes one route per method (`origin_route_id`, with the declared
+method kept in `raw_method` so a refresh can redo it). Servlet filters from
+web.xml become route middleware resolved to `doFilter`. Django `include()`
+prefixes and Pyramid route names are applied when prefixes are computed.
 
 ## Search
 
@@ -164,12 +200,15 @@ lookups and returns each list separately:
   shorter paths.
 - **Routes.** An optional leading HTTP method (`GET`, `post`, ...) filters by
   method (`ALL`/`ANY` routes always match). When present, only routes are
-  searched. Paths are normalized to a *shape* with
-  parameters (`:id`, `{id}`, `<int:id>`) replaced by `*` and segments
+  searched. Paths are normalized to a *shape* with parameters (`:id`, `{id}`,
+  `<int:id>`) replaced by `*` (one segment), a literal `*` or `**` (servlet
+  `/api/*`, Ant `/**`) as a wildcard for any number of segments, `*.do`
+  (servlet extension mapping) kept as a suffix pattern, and segments
   lower-cased. A route scores 3 when its shape equals the query's shape or
   matches it segment by segment (a concrete query segment such as `42`
-  matches a parameter), 2 when its shape starts with the query's shape, and 1
-  when its full path contains the query as text.
+  matches a parameter; `/api/users/42/orders` matches `/api/users/*`;
+  `/login.do` matches `*.do`), 2 when its shape starts with the query's
+  shape, and 1 when its full path contains the query as text.
 
 Every list is capped by `limit` (at most 500). The UI asks for 15 per kind,
 waits 120 ms after the last keystroke, and discards responses to superseded

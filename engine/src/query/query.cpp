@@ -20,7 +20,7 @@ namespace {
 constexpr const char* kSymbolBriefCols =
     "s.id, s.name, s.qualified_name, s.kind, s.language, f.path, s.start_line, s.end_line, s.exported";
 
-const std::vector<std::string> kDefaultTraverseKinds = {"calls", "instantiates", "registers_route", "uses_middleware",
+const std::vector<std::string> kDefaultTraverseKinds = {"calls", "instantiates", "configures", "registers_route", "uses_middleware",
                                                         "mounts", "loads_module", "overridden_by"};
 
 std::string in_list(const std::vector<std::string>& items) {
@@ -34,7 +34,10 @@ std::string lower(std::string s) {
   return s;
 }
 
-// Canonical route path for matching: parameters (:id, {id}, <int:id>) -> "*".
+// Canonical route path for matching: parameters (:id, {id}, <int:id>) -> "*"
+// (one segment); a literal "*" or "**" (servlet "/api/*", Ant "/**", Express
+// "/files/*") -> "**" (any number of segments); "*.do" (servlet extension
+// mapping) is kept and matches a last segment ending in ".do".
 std::string route_shape(const std::string& path) {
   std::string out;
   std::stringstream ss(path);
@@ -47,9 +50,31 @@ std::string route_shape(const std::string& path) {
     }
     if (seg.empty()) continue;
     bool param = seg[0] == ':' || (seg.front() == '{' && seg.back() == '}') || (seg.front() == '<' && seg.back() == '>');
-    out += "/" + (param ? std::string("*") : lower(seg));
+    if (seg == "*" || seg == "**") out += "/**";
+    else out += "/" + (param ? std::string("*") : lower(seg));
   }
   return out.empty() ? "/" : out;
+}
+
+bool segments_match(const std::vector<std::string>& a, size_t i, const std::vector<std::string>& b, size_t j, int budget) {
+  if (budget <= 0) return false;
+  if (i == a.size()) return j == b.size();
+  if (a[i] == "**") {
+    // zero or more query segments
+    for (size_t k = j; k <= b.size(); ++k) {
+      if (segments_match(a, i + 1, b, k, budget - 1)) return true;
+    }
+    return false;
+  }
+  if (j == b.size()) return false;
+  const std::string& r = a[i];
+  const std::string& q = b[j];
+  bool ok = r == "*" || q == "*" || q == "**" || r == q;
+  if (!ok && r.size() > 2 && r.rfind("*.", 0) == 0) {
+    // extension mapping: "*.do" matches "login.do"
+    ok = q.size() >= r.size() - 1 && q.compare(q.size() - (r.size() - 1), r.size() - 1, r, 1) == 0;
+  }
+  return ok && segments_match(a, i + 1, b, j + 1, budget - 1);
 }
 
 bool shape_matches(const std::string& route, const std::string& query) {
@@ -58,12 +83,8 @@ bool shape_matches(const std::string& route, const std::string& query) {
   std::stringstream sa(route), sb(query);
   for (std::string s; std::getline(sa, s, '/');) if (!s.empty()) a.push_back(s);
   for (std::string s; std::getline(sb, s, '/');) if (!s.empty()) b.push_back(s);
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (a[i] == "*" || b[i] == "*") continue;
-    if (a[i] != b[i]) return false;
-  }
-  return true;
+  if (a.size() > 64 || b.size() > 64) return false;
+  return segments_match(a, 0, b, 0, 4096);
 }
 
 int64_t clamp(int64_t v, int64_t lo, int64_t hi) { return std::max(lo, std::min(v, hi)); }
@@ -813,9 +834,9 @@ json IndexReader::startup_path(int64_t symbol_id, int max_depth) {
       "ELSE 5 END LIMIT 1");
   auto preds = db_.prepare(
       "SELECT e.src_symbol_id, e.kind, e.line, ef.path FROM edges e JOIN files ef ON ef.id = e.file_id "
-      "WHERE e.dst_symbol_id = ? AND e.kind IN ('calls','instantiates','mounts','loads_module','registers_route') "
+      "WHERE e.dst_symbol_id = ? AND e.kind IN ('calls','instantiates','mounts','loads_module','registers_route','configures') "
       "AND e.status IN ('resolved','heuristic') ORDER BY CASE e.kind WHEN 'mounts' THEN 0 WHEN 'registers_route' THEN 1 "
-      "WHEN 'calls' THEN 2 WHEN 'instantiates' THEN 3 ELSE 4 END, e.id LIMIT 50");
+      "WHEN 'configures' THEN 2 WHEN 'calls' THEN 3 WHEN 'instantiates' THEN 4 ELSE 5 END, e.id LIMIT 50");
   struct Node {
     int64_t sym;
     int parent;

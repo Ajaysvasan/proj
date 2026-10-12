@@ -138,8 +138,8 @@ Resolver::Resolver(db::Database& db, std::filesystem::path root, DiagnosticSink&
   q_file_by_path_ = db_.prepare("SELECT id FROM files WHERE path = ?");
   q_files_by_name_ = db_.prepare("SELECT id, path FROM files WHERE name = ? ORDER BY path LIMIT 64");
   q_symbol_ = db_.prepare(
-      "SELECT id, file_id, parent_id, name, kind, qualified_name, container, language, param_count, is_definition "
-      "FROM symbols WHERE id = ?");
+      "SELECT id, file_id, parent_id, name, kind, qualified_name, container, language, param_count, is_definition, "
+      "IFNULL(param_types, '') FROM symbols WHERE id = ?");
   q_children_ = db_.prepare("SELECT id FROM symbols WHERE parent_id = ? AND name = ? ORDER BY id LIMIT 64");
   q_module_symbol_ = db_.prepare("SELECT MIN(id) FROM symbols WHERE file_id = ?");
   q_bindings_ = db_.prepare(
@@ -234,6 +234,7 @@ std::optional<Resolver::SymbolInfo> Resolver::symbol(int64_t id) {
     s.language = q_symbol_.text(7);
     s.param_count = q_symbol_.is_null(8) ? -1 : static_cast<int>(q_symbol_.int64(8));
     s.is_definition = q_symbol_.int64(9) != 0;
+    s.param_types = q_symbol_.text(10);
     out = s;
   }
   q_symbol_.reset();
@@ -281,6 +282,7 @@ std::string Resolver::language_of_file(int64_t file_id) {
 std::string Resolver::family(const std::string& lang) const {
   if (lang == "javascript" || lang == "typescript" || lang == "tsx") return "js";
   if (lang == "c" || lang == "cpp") return "c";
+  if (lang == "xml" || lang == "yaml") return "config";
   return lang;
 }
 
@@ -819,11 +821,23 @@ Resolver::Value Resolver::export_value(int64_t file, const std::string& name, in
 Resolver::Outcome Resolver::pick(std::vector<SymbolInfo> cands, int arg_count, const std::string& note) {
   Outcome o;
   // Collapse declaration/definition pairs (C/C++ headers): keep the definition.
+  // Same-arity overloads differ in their parameter types and stay separate.
+  auto same_params = [](const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return true;
+    auto squash = [](const std::string& s) {
+      std::string out;
+      for (char ch : s) {
+        if (!std::isspace(static_cast<unsigned char>(ch))) out += ch;
+      }
+      return out;
+    };
+    return squash(a) == squash(b);
+  };
   std::vector<SymbolInfo> unique;
   for (const auto& c : cands) {
     auto it = std::find_if(unique.begin(), unique.end(), [&](const SymbolInfo& u) {
       return u.qualified_name == c.qualified_name && u.param_count == c.param_count && u.id != c.id &&
-             family(u.language) == "c" && family(c.language) == "c";
+             family(u.language) == "c" && family(c.language) == "c" && same_params(u.param_types, c.param_types);
     });
     if (it == unique.end()) {
       if (std::none_of(unique.begin(), unique.end(), [&](const SymbolInfo& u) { return u.id == c.id; })) unique.push_back(c);
@@ -853,6 +867,18 @@ Resolver::Outcome Resolver::pick(std::vector<SymbolInfo> cands, int arg_count, c
       return o;
     }
     if (!by_args.empty()) unique = by_args;
+    // Same arity: compare the argument types visible at the call site.
+    if (unique.size() > 1 && arg_count == call_ctx_.arg_count && !call_ctx_.arg_types.empty()) {
+      std::string type_note;
+      auto narrowed = narrow_by_types(unique, &type_note);
+      if (narrowed.size() == 1) {
+        o.status = "resolved";
+        o.targets = {narrowed[0].id};
+        o.note = note.empty() ? type_note : note + "; " + type_note;
+        return o;
+      }
+      if (!narrowed.empty()) unique = narrowed;
+    }
   }
   o.status = "ambiguous";
   for (size_t i = 0; i < unique.size() && i < kMaxCandidates; ++i) o.targets.push_back(unique[i].id);
@@ -994,6 +1020,13 @@ int64_t Resolver::evaluate_call_type(int64_t file, int64_t scope, const std::str
     explicit Guard(int& depth) : d(depth) { ++d; }
     ~Guard() { --d; }
   } guard(type_depth_);
+  // The producing call has its own (unknown) arguments.
+  struct CtxGuard {
+    CallContext& ctx;
+    CallContext saved;
+    explicit CtxGuard(CallContext& c) : ctx(c), saved(std::move(c)) { ctx = CallContext{}; }
+    ~CtxGuard() { ctx = std::move(saved); }
+  } ctx_guard(call_ctx_);
   std::string callee = spec;
   bool awaited = starts_with(callee, "await ");
   if (awaited) callee = callee.substr(6);
@@ -1350,6 +1383,9 @@ Resolver::Outcome Resolver::resolve_chained(const std::string& receiver_text, co
 
 Resolver::Outcome Resolver::resolve_call(int64_t scope, const std::string& kind, const std::string& name,
                                          const std::string& receiver, const std::string& receiver_kind, int arg_count) {
+  if (receiver_kind == "config_class" || receiver_kind == "config_bean") {
+    return resolve_call_config(name, receiver, receiver_kind);
+  }
   if (receiver_kind == "typed") return resolve_typed_receiver(scope, receiver, name, arg_count);
   std::string fam = family(file_lang_);
   if (fam == "java") return resolve_call_java(scope, kind, name, receiver, receiver_kind, arg_count);
@@ -1944,11 +1980,11 @@ void Resolver::resolve_inheritance() {
 
 void Resolver::resolve_calls() {
   auto files = db_.prepare(
-      "SELECT DISTINCT file_id FROM edges WHERE status = 'pending' AND kind IN ('calls','instantiates') "
+      "SELECT DISTINCT file_id FROM edges WHERE status = 'pending' AND kind IN ('calls','instantiates','configures') "
       "AND file_id > ? ORDER BY file_id LIMIT 64");
   auto sel = db_.prepare(
-      "SELECT id, kind, src_symbol_id, target_name, receiver, receiver_kind, arg_count, IFNULL(receiver_edge_id, -1) "
-      "FROM edges WHERE file_id = ? AND status = 'pending' AND kind IN ('calls','instantiates') ORDER BY id");
+      "SELECT id, kind, src_symbol_id, target_name, receiver, receiver_kind, arg_count, IFNULL(receiver_edge_id, -1), "
+      "IFNULL(arg_types, '') FROM edges WHERE file_id = ? AND status = 'pending' AND kind IN ('calls','instantiates','configures') ORDER BY id");
   auto existing = db_.prepare("SELECT status, IFNULL(dst_symbol_id, -1) FROM edges WHERE id = ?");
   auto upd = db_.prepare("UPDATE edges SET dst_symbol_id = ?, status = ?, note = ?, kind = ? WHERE id = ?");
   auto cand = db_.prepare("INSERT OR IGNORE INTO edge_candidates(edge_id, symbol_id) VALUES (?, ?)");
@@ -1970,12 +2006,13 @@ void Resolver::resolve_calls() {
         std::string name, receiver, rk;
         int args;
         int64_t receiver_edge;
+        std::string arg_types;
       };
       std::vector<Row> rows;
       sel.bind(1, file);
       while (sel.step()) {
         rows.push_back({sel.int64(0), sel.text(1), sel.int64(2), sel.text(3), sel.text(4), sel.text(5),
-                        sel.is_null(6) ? -1 : static_cast<int>(sel.int64(6)), sel.int64(7)});
+                        sel.is_null(6) ? -1 : static_cast<int>(sel.int64(6)), sel.int64(7), sel.text(8)});
       }
       sel.reset();
       std::unordered_map<int64_t, size_t> by_id;
@@ -1993,6 +2030,26 @@ void Resolver::resolve_calls() {
           return o;
         }
         active[i] = 1;
+        // Argument types for overload selection, restored after nested receiver resolution.
+        auto with_args = [&](auto&& fn) {
+          CallContext saved = std::move(call_ctx_);
+          call_ctx_ = CallContext{r.src, r.args, {}};
+          if (!r.arg_types.empty()) {
+            std::string cur;
+            for (char ch : r.arg_types) {
+              if (ch == ',') {
+                call_ctx_.arg_types.push_back(cur);
+                cur.clear();
+              } else {
+                cur += ch;
+              }
+            }
+            call_ctx_.arg_types.push_back(cur);
+          }
+          Outcome out = fn();
+          call_ctx_ = std::move(saved);
+          return out;
+        };
         if (r.rk == "call") {
           Outcome recv;
           recv.status = "unresolved";
@@ -2006,10 +2063,10 @@ void Resolver::resolve_calls() {
             }
             existing.reset();
           }
-          o = resolve_chained(r.receiver, recv, r.name, r.args);
+          o = with_args([&] { return resolve_chained(r.receiver, recv, r.name, r.args); });
           if (r.kind == "instantiates") o.kind = "instantiates";
         } else {
-          o = resolve_call(r.src, r.kind, r.name, r.receiver, r.rk, r.args);
+          o = with_args([&] { return resolve_call(r.src, r.kind, r.name, r.receiver, r.rk, r.args); });
         }
         active[i] = 0;
         done[i] = o;
@@ -2018,12 +2075,14 @@ void Resolver::resolve_calls() {
       for (size_t i = 0; i < rows.size(); ++i) {
         const Row& r = rows[i];
         Outcome o = resolve_row(i, 0);
-        ++stats_.calls_total;
-        if (o.status == "resolved") ++stats_.calls_resolved;
-        else if (o.status == "ambiguous") ++stats_.calls_ambiguous;
-        else if (o.status == "heuristic") ++stats_.calls_heuristic;
-        else if (o.status == "external") ++stats_.calls_external;
-        else ++stats_.calls_unresolved;
+        if (r.kind != "configures") {
+          ++stats_.calls_total;
+          if (o.status == "resolved") ++stats_.calls_resolved;
+          else if (o.status == "ambiguous") ++stats_.calls_ambiguous;
+          else if (o.status == "heuristic") ++stats_.calls_heuristic;
+          else if (o.status == "external") ++stats_.calls_external;
+          else ++stats_.calls_unresolved;
+        }
         bool single = (o.status == "resolved" || o.status == "heuristic") && o.targets.size() == 1;
         if (single) upd.bind(1, o.targets[0]); else upd.bind(1, nullptr);
         upd.bind(2, o.status).bind_text_or_null(3, o.note).bind(4, o.kind.empty() ? r.kind : o.kind).bind(5, r.id).run();
@@ -2144,6 +2203,28 @@ void Resolver::resolve_mounts() {
       int64_t sym = r.target_symbol;
       std::string status = "unresolved";
       std::string note = r.note;
+      if (r.kind == "module") {
+        // Django include(): the routes of the included URLconf module get this prefix.
+        int64_t target_file = -1;
+        auto& q = cached(
+            "SELECT id FROM files WHERE module_name = ?1 OR module_name LIKE '%.' || ?1 ORDER BY length(module_name), "
+            "path LIMIT 1");
+        q.bind(1, r.name);
+        if (q.step()) target_file = q.int64(0);
+        q.reset();
+        if (target_file < 0 && r.name.find('.') == std::string::npos) {
+          Value v = resolve_name(r.file, scope, r.name);
+          if (v.kind == Kind::Module) target_file = v.id;
+        }
+        int64_t dst = target_file >= 0 ? module_symbol(target_file) : -1;
+        note = dst >= 0 ? "Django URLconf included here" : "URLconf module " + r.name + " not found in the project";
+        upd.bind(1, dst >= 0 ? "urlconf" : "unresolved").bind(2, nullptr).bind_id_or_null(3, dst);
+        upd.bind_text_or_null(4, note).bind(5, r.id).run();
+        edge.bind(1, "mounts").bind(2, scope).bind_id_or_null(3, dst).bind(4, r.file).bind(5, r.line).bind(6, r.col);
+        edge.bind(7, dst >= 0 ? "resolved" : "unresolved").bind(8, r.name).bind(9, r.text).bind(10, note).run();
+        dst >= 0 ? ++stats_.mounts_router : ++stats_.mounts_unresolved;
+        continue;
+      }
       if (r.kind == "inline") {
         status = "middleware";
       } else if (r.kind == "identifier") {
@@ -2224,22 +2305,154 @@ void Resolver::resolve_mounts() {
   }
 }
 
+Resolver::Outcome Resolver::resolve_handler_ref(int64_t file, int64_t scope, const std::string& kind,
+                                                const std::string& name, const std::string& receiver, int64_t* cls) {
+  *cls = -1;
+  Outcome o;
+  o.status = "unresolved";
+  auto class_target = [&](int64_t id) {
+    auto s = symbol(id);
+    if (!s) return -1L;
+    if (is_class_kind(s->kind)) return static_cast<long>(id);
+    if (s->kind == "constructor") {
+      auto parent = symbol(s->parent_id);
+      if (parent && is_class_kind(parent->kind)) return static_cast<long>(parent->id);
+    }
+    return -1L;
+  };
+  std::string fam = family(language_of_file(file));
+  if (fam == "c" && (kind == "identifier" || kind == "member")) {
+    // C/C++: a function, Class::method, ns::function, or obj.method on a typed variable.
+    if (kind == "identifier") {
+      o = resolve_call(scope, "calls", name, "", "none", -1);
+    } else {
+      bool qualified = receiver.find("::") != std::string::npos || cpp_type(scope, receiver) >= 0;
+      o = resolve_call(scope, "calls", name, receiver, qualified ? "qualified" : "identifier", -1);
+    }
+    if ((o.status == "resolved" || o.status == "heuristic") && o.targets.size() == 1) {
+      auto s = symbol(o.targets[0]);
+      if (s && is_class_kind(s->kind)) *cls = s->id;
+    }
+    return o;
+  }
+  bool java = fam == "java";
+  if (java && (kind == "identifier" || kind == "member")) {
+    // Java: a handler variable (or obj::method) is typed by its declaration.
+    std::string var = kind == "identifier" ? name : receiver;
+    auto type = hint_in_scope_chain(scope, var);
+    if (!type || *type == "?") {
+      o.note = "the type of '" + var + "' is not known";
+      return o;
+    }
+    Outcome c = resolve_class_ref(file, scope, *type);
+    if (c.status != "resolved") return c;
+    if (kind == "member") return method_lookup(c.targets[0], name, -1);
+    *cls = c.targets[0];
+    return c;
+  }
+  if (kind == "identifier") {
+    Value v = resolve_name(file, scope, name);
+    if (v.kind == Kind::Instance) {
+      // A handler object: route requests to its class.
+      int64_t c = resolve_type(v.context_file >= 0 ? v.context_file : file, v.context_scope >= 0 ? v.context_scope : scope,
+                               v.type);
+      if (c >= 0) {
+        o.status = "resolved";
+        o.targets = {c};
+      } else {
+        o.note = "handler object of type " + v.type + ", which is not a project class";
+      }
+    } else if (v.kind == Kind::Symbol && symbol(v.id) && is_class_kind(symbol(v.id)->kind)) {
+      o.status = "resolved";
+      o.targets = {v.id};
+    } else {
+      o = value_call(v, -1, false);
+    }
+  } else if (kind == "member") {
+    if (starts_with(receiver, "this.")) {
+      o = resolve_call(scope, "calls", name, receiver.substr(5), "this_member", -1);
+    } else {
+      o = member_of(resolve_name(file, scope, receiver), name, -1);
+    }
+  } else if (kind == "require") {
+    q_dep_by_spec_.bind(1, file).bind(2, name);
+    int64_t dst = -1;
+    if (q_dep_by_spec_.step() && !q_dep_by_spec_.is_null(1)) dst = q_dep_by_spec_.int64(1);
+    q_dep_by_spec_.reset();
+    if (dst >= 0) o = value_call(Value{Kind::Module, dst}, -1, false);
+  } else if (kind == "class") {
+    o = resolve_class_ref(file, scope, name);
+  } else if (kind == "qualified") {
+    o = config_member(name, receiver);
+  } else if (kind == "name") {
+    o = config_function_name(name);
+  } else if (kind == "file") {
+    o = config_file(name, receiver);
+  } else if (kind == "bean") {
+    Outcome b = config_bean(name);
+    if (b.status != "resolved") return b;
+    auto bean = symbol(b.targets[0]);
+    if (!bean || bean->container.empty()) {
+      o.note = "bean '" + name + "' declares no class";
+      return o;
+    }
+    o = config_class(bean->container);
+  } else if (kind == "method_ref") {
+    // Java method references: Type::method, this::method
+    int64_t owner = -1;
+    if (receiver == "this" || receiver == "super") {
+      owner = enclosing_class(scope);
+    } else {
+      Outcome c = resolve_class_ref(file, scope, receiver);
+      if (c.status == "external") return c;
+      if (c.status == "resolved") owner = c.targets[0];
+    }
+    if (owner < 0) {
+      o.note = "type " + receiver + " is not a project class";
+      return o;
+    }
+    o = method_lookup(owner, name, -1);
+    return o;
+  } else {
+    o.note = "handler expression is not statically resolvable";
+    return o;
+  }
+  if ((o.status == "resolved" || o.status == "heuristic") && o.targets.size() == 1) {
+    int64_t c = class_target(o.targets[0]);
+    if (c >= 0) *cls = c;
+  }
+  return o;
+}
+
 void Resolver::resolve_route_handlers() {
   auto sel = db_.prepare(
-      "SELECT id, file_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, raw_handler_note FROM routes "
-      "WHERE handler_status = 'pending' AND id > ? ORDER BY id LIMIT ?");
-  auto upd = db_.prepare("UPDATE routes SET handler_symbol_id = ?, handler_status = ?, handler_note = ? WHERE id = ?");
+      "SELECT id, file_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, raw_handler_note, framework, "
+      "method FROM routes WHERE handler_status = 'pending' AND id > ? ORDER BY id LIMIT ?");
+  auto upd = db_.prepare(
+      "UPDATE routes SET handler_symbol_id = ?, handler_status = ?, handler_note = ?, method = ? WHERE id = ?");
+  // A handler class serving several HTTP methods becomes one route per method.
+  auto copy = db_.prepare(
+      "INSERT INTO routes(framework, method, path, full_path, mount_prefix, mount_status, mount_id, file_id, line, col, "
+      "registrar, router_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, handler_text, "
+      "handler_symbol_id, handler_status, handler_note, confidence, declared_prefix, raw_handler_note, origin_route_id, "
+      "raw_method) SELECT framework, ?1, path, full_path, mount_prefix, mount_status, mount_id, file_id, line, col, "
+      "registrar, router_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, handler_text, ?2, ?3, ?4, "
+      "confidence, declared_prefix, raw_handler_note, ?5, raw_method FROM routes WHERE id = ?5");
+  auto copy_mw = db_.prepare(
+      "INSERT INTO route_middleware(route_id, position, scope, ref_kind, name, receiver, text, symbol_id, status, "
+      "file_id, line) SELECT ?, position, scope, ref_kind, name, receiver, text, symbol_id, status, file_id, line "
+      "FROM route_middleware WHERE route_id = ? ORDER BY position, id");
   int64_t last = 0;
   while (true) {
     struct Row {
       int64_t id, file, scope;
-      std::string kind, name, receiver, note;
+      std::string kind, name, receiver, note, framework, method;
     };
     std::vector<Row> rows;
     sel.bind(1, last).bind(2, kPage);
     while (sel.step()) {
       rows.push_back({sel.int64(0), sel.int64(1), sel.is_null(2) ? -1 : sel.int64(2), sel.text(3), sel.text(4),
-                      sel.text(5), sel.text(6)});
+                      sel.text(5), sel.text(6), sel.text(7), sel.text(8)});
     }
     sel.reset();
     if (rows.empty()) break;
@@ -2247,27 +2460,22 @@ void Resolver::resolve_route_handlers() {
       last = r.id;
       set_file_context(r.file);
       int64_t scope = r.scope >= 0 ? r.scope : module_symbol(r.file);
-      Outcome o;
-      o.status = "unresolved";
-      if (r.kind == "identifier") {
-        o = value_call(resolve_name(r.file, scope, r.name), -1, false);
-      } else if (r.kind == "member") {
-        if (starts_with(r.receiver, "this.")) {
-          o = resolve_call(scope, "calls", r.name, r.receiver.substr(5), "this_member", -1);
+      int64_t cls = -1;
+      Outcome o = resolve_handler_ref(r.file, scope, r.kind, r.name, r.receiver, &cls);
+      auto with = [](const std::string& a, const std::string& b) { return a.empty() ? b : (b.empty() ? a : a + "; " + b); };
+      std::string note = with(r.note, o.note);
+      std::vector<DispatchTarget> targets;
+      if (cls >= 0) {
+        std::string dnote;
+        targets = dispatch_targets(cls, r.framework, r.method, r.kind == "class" ? r.receiver : "", &dnote);
+        if (targets.empty()) {
+          o.status = "unresolved";
+          o.targets.clear();
+          note = with(note, dnote);
         } else {
-          o = member_of(resolve_name(r.file, scope, r.receiver), r.name, -1);
+          o.targets = {targets[0].symbol};
         }
-      } else if (r.kind == "require") {
-        q_dep_by_spec_.bind(1, r.file).bind(2, r.name);
-        int64_t dst = -1;
-        if (q_dep_by_spec_.step() && !q_dep_by_spec_.is_null(1)) dst = q_dep_by_spec_.int64(1);
-        q_dep_by_spec_.reset();
-        if (dst >= 0) o = value_call(Value{Kind::Module, dst}, -1, false);
-      } else {
-        o.note = "handler expression is not statically resolvable";
       }
-      std::string note = r.note;
-      if (!o.note.empty()) note = note.empty() ? o.note : note + "; " + o.note;
       bool single = (o.status == "resolved" || o.status == "heuristic") && o.targets.size() == 1;
       if (single) {
         ++stats_.route_handlers_resolved;
@@ -2276,15 +2484,26 @@ void Resolver::resolve_route_handlers() {
         ++stats_.route_handlers_unresolved;
         upd.bind(1, nullptr);
       }
-      upd.bind(2, o.status).bind_text_or_null(3, note).bind(4, r.id).run();
+      std::string method = targets.empty() ? r.method : targets[0].method;
+      upd.bind(2, o.status).bind_text_or_null(3, targets.empty() ? note : with(note, targets[0].note));
+      upd.bind(4, method).bind(5, r.id).run();
+      for (size_t i = 1; i < targets.size(); ++i) {
+        copy.bind(1, targets[i].method).bind(2, targets[i].symbol).bind(3, o.status);
+        copy.bind_text_or_null(4, with(note, targets[i].note)).bind(5, r.id).run();
+        copy_mw.bind(1, db_.last_insert_rowid()).bind(2, r.id).run();
+        ++stats_.route_handlers_resolved;
+      }
     }
   }
-  // Registration edges: the code that registers a route -> its handler.
+  // Registration edges: the code that registers a route -> its handler. Copies
+  // made for other mount prefixes share the handler; copies for other HTTP
+  // methods of a handler class do not.
   db_.exec(
       "INSERT INTO edges(kind, raw_kind, generated, src_symbol_id, dst_symbol_id, file_id, line, col, status, target_name, "
       "target_text, note) SELECT 'registers_route', 'registers_route', 1, COALESCE(scope_symbol_id, (SELECT MIN(id) FROM symbols WHERE file_id = routes.file_id)), "
       "handler_symbol_id, file_id, line, col, handler_status, handler_name, COALESCE(handler_text, handler_name), "
-      "method || ' ' || path FROM routes WHERE origin_route_id IS NULL");
+      "method || ' ' || path FROM routes WHERE origin_route_id IS NULL OR method != "
+      "(SELECT o.method FROM routes o WHERE o.id = routes.origin_route_id)");
   stats_.routes = db_.query_int("SELECT COUNT(*) FROM routes").value_or(0);
 }
 
@@ -2312,8 +2531,18 @@ void Resolver::resolve_route_middleware() {
       int64_t scope = r.scope >= 0 ? r.scope : module_symbol(r.file);
       Outcome o;
       o.status = "unresolved";
-      if (r.kind == "identifier") o = value_call(resolve_name(r.file, scope, r.name), -1, false);
-      else if (r.kind == "member") o = member_of(resolve_name(r.file, scope, r.receiver), r.name, -1);
+      if (r.kind == "identifier") {
+        o = value_call(resolve_name(r.file, scope, r.name), -1, false);
+      } else if (r.kind == "member") {
+        o = member_of(resolve_name(r.file, scope, r.receiver), r.name, -1);
+      } else if (r.kind == "class") {
+        // A filter class (web.xml): its request method (doFilter), else the class.
+        o = resolve_class_ref(r.file, scope, r.name);
+        if (o.status == "resolved" && o.targets.size() == 1 && !r.receiver.empty()) {
+          Outcome m = method_lookup(o.targets[0], r.receiver, -1);
+          if ((m.status == "resolved" || m.status == "ambiguous") && !m.targets.empty()) o.targets = {m.targets[0]};
+        }
+      }
       bool single = (o.status == "resolved" || o.status == "heuristic") && o.targets.size() == 1;
       upd.bind_id_or_null(1, single ? o.targets[0] : -1).bind(2, o.status).bind(3, r.id).run();
     }
@@ -2322,8 +2551,38 @@ void Resolver::resolve_route_middleware() {
       "INSERT INTO edges(kind, raw_kind, generated, src_symbol_id, dst_symbol_id, file_id, line, col, status, target_name, "
       "target_text, note) SELECT 'uses_middleware', 'uses_middleware', 1, COALESCE(r.scope_symbol_id, (SELECT MIN(id) FROM symbols WHERE file_id = r.file_id)), "
       "m.symbol_id, m.file_id, m.line, r.col, m.status, m.name, m.text, 'route middleware for ' || r.method || ' ' || r.path "
-      "FROM route_middleware m JOIN routes r ON r.id = m.route_id WHERE m.ref_kind IN ('identifier','member','inline') "
+      "FROM route_middleware m JOIN routes r ON r.id = m.route_id WHERE m.ref_kind IN ('identifier','member','inline','class') "
       "AND m.scope = 'route' AND r.origin_route_id IS NULL");
+}
+
+// Prefixes under which the routes of a Django URLconf file are served: the
+// include() chains from the root URLconf. {"", -1} when nothing includes it.
+std::vector<std::pair<std::string, int64_t>> Resolver::django_prefixes(int64_t file, int depth, std::set<int64_t>& seen) {
+  std::vector<std::pair<std::string, int64_t>> out;
+  if (depth > 8 || !seen.insert(file).second) return {{"", -1}};
+  struct M {
+    int64_t id, file;
+    std::string prefix;
+  };
+  std::vector<M> ms;
+  auto& q = cached(
+      "SELECT m.id, m.file_id, IFNULL(m.prefix, '') FROM mounts m JOIN symbols s ON s.id = m.target_symbol_id "
+      "JOIN files f ON f.id = m.file_id WHERE m.status = 'urlconf' AND s.file_id = ? ORDER BY f.path, m.line, m.col");
+  q.bind(1, file);
+  while (q.step()) ms.push_back({q.int64(0), q.int64(1), q.text(2)});
+  q.reset();
+  if (ms.empty()) {
+    seen.erase(file);
+    return {{"", -1}};
+  }
+  for (const auto& m : ms) {
+    for (const auto& parent : django_prefixes(m.file, depth + 1, seen)) {
+      out.emplace_back(join_route(parent.first, m.prefix), m.id);
+      if (out.size() >= 8) break;
+    }
+  }
+  seen.erase(file);
+  return out;
 }
 
 void Resolver::compute_route_prefixes() {
@@ -2395,10 +2654,10 @@ void Resolver::compute_route_prefixes() {
   auto copy = db_.prepare(
       "INSERT INTO routes(framework, method, path, full_path, mount_prefix, mount_status, mount_id, file_id, line, col, "
       "registrar, router_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, handler_text, "
-      "handler_symbol_id, handler_status, handler_note, confidence, declared_prefix, origin_route_id) SELECT framework, "
-      "method, path, ?1, ?2, 'resolved', ?3, file_id, line, col, registrar, router_id, scope_symbol_id, handler_kind, "
-      "handler_name, handler_receiver, handler_text, handler_symbol_id, handler_status, handler_note, confidence, "
-      "declared_prefix, ?4 FROM routes WHERE id = ?4");
+      "handler_symbol_id, handler_status, handler_note, confidence, declared_prefix, origin_route_id, raw_method, "
+      "raw_handler_note) SELECT framework, method, path, ?1, ?2, 'resolved', ?3, file_id, line, col, registrar, "
+      "router_id, scope_symbol_id, handler_kind, handler_name, handler_receiver, handler_text, handler_symbol_id, "
+      "handler_status, handler_note, confidence, declared_prefix, ?4, raw_method, raw_handler_note FROM routes WHERE id = ?4");
   auto copy_mw = db_.prepare(
       "INSERT INTO route_middleware(route_id, position, scope, ref_kind, name, receiver, text, symbol_id, status, "
       "file_id, line) SELECT ?, position, scope, ref_kind, name, receiver, text, symbol_id, status, file_id, line "
@@ -2455,12 +2714,39 @@ void Resolver::compute_route_prefixes() {
     for (const auto& r : rows) {
       last = r.id;
       if (r.framework == "django") {
-        // Django include() prefixes are not resolved; the declared path is used as is.
-        upd.bind(1, join_route("", r.path)).bind(2, nullptr).bind(3, "none").bind(4, nullptr).bind(5, nullptr);
-        upd.bind(6, r.id).run();
+        // Prefixes from include() chains; one route per distinct prefix.
+        std::set<int64_t> seen;
+        auto prefixes = django_prefixes(r.file, 0, seen);
+        for (size_t i = 0; i < prefixes.size(); ++i) {
+          std::string full = join_route(prefixes[i].first, r.path);
+          bool mounted = prefixes[i].second >= 0;
+          if (i == 0) {
+            upd.bind(1, full).bind_text_or_null(2, mounted ? prefixes[i].first : "").bind(3, mounted ? "resolved" : "none");
+            upd.bind_id_or_null(4, prefixes[i].second).bind(5, nullptr).bind(6, r.id).run();
+          } else {
+            copy.bind(1, full).bind(2, prefixes[i].first).bind(3, prefixes[i].second).bind(4, r.id).run();
+            copy_mw.bind(1, db_.last_insert_rowid()).bind(2, r.id).run();
+          }
+        }
         continue;
       }
-      if (r.framework == "nestjs" || r.framework == "spring" || r.framework == "jaxrs") {
+      if (r.framework == "pyramid") {
+        // config.add_route('name', '/pattern') declares the path of a named route.
+        auto& q = cached(
+            "SELECT r.prefix FROM routers r JOIN files f ON f.id = r.file_id WHERE r.kind = 'pyramid_route' "
+            "AND r.name = ? ORDER BY f.path, r.line LIMIT 1");
+        q.bind(1, r.registrar);
+        std::optional<std::string> pattern;
+        if (q.step()) pattern = q.text(0);
+        q.reset();
+        upd.bind(1, join_route(pattern.value_or(""), r.path)).bind_text_or_null(2, pattern.value_or(""));
+        upd.bind(3, pattern ? "resolved" : "unmounted").bind(4, nullptr).bind(5, nullptr).bind(6, r.id).run();
+        continue;
+      }
+      // Frameworks whose prefixes are declared next to the route (class-level
+      // mappings, Struts namespaces, OpenAPI base paths) rather than by mounting
+      // router objects.
+      if (r.framework != "express" && r.framework != "flask" && r.framework != "fastapi") {
         std::string full = join_route(r.prefix, r.path);
         upd.bind(1, full).bind_text_or_null(2, r.prefix == "/" ? "" : r.prefix);
         upd.bind(3, r.prefix.empty() || r.prefix == "/" ? "none" : "class_mapping").bind(4, nullptr).bind(5, nullptr);

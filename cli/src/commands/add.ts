@@ -144,6 +144,16 @@ export async function reportAnalysis(res: EngineResponse, json: boolean, ctx: Co
         `${formatCount(files.skipped)} skipped, ${formatCount(files.unsupported)} unsupported, ${formatCount(files.excluded)} excluded`,
     ),
   );
+  const config = files.config;
+  if (config && config.parsed + config.with_syntax_errors + config.skipped > 0) {
+    out.push(
+      line(
+        'Config files',
+        `${formatCount(config.parsed + config.with_syntax_errors)} XML/YAML parsed (${formatCount(config.with_syntax_errors)} with syntax errors, ` +
+          `${formatCount(config.skipped)} skipped); they never make an analysis partial`,
+      ),
+    );
+  }
   if (files.by_language && Object.keys(files.by_language).length > 0) {
     out.push(line('Languages', Object.entries(files.by_language).map(([k, v]) => `${k} ${v}`).join(', ')));
   }

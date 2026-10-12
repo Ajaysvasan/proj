@@ -8,7 +8,7 @@ Two kinds of SQLite database live in the data directory:
 - `indexes/project-<id>.db`: one per project. `proj add` builds it from
   scratch and `proj refresh` updates a copy of it. Either way the new file is
   atomically renamed into place. Its version is stored in
-  `index_meta.schema_version` (currently 2). An index from an older or newer
+  `index_meta.schema_version` (currently 3). An index from an older or newer
   schema is refused with a message to re-run `proj add <name> <path>
   --reanalyze`. It is never silently destroyed, and a refresh never upgrades
   it.
@@ -34,6 +34,7 @@ Start/finish timestamps, `duration_ms` (monotonic clock), `status` (`running`,
 the counts `files_discovered`, `files_parsed`, `files_skipped`, `symbols`,
 `relationships`, `unresolved_refs`, `parse_errors`, `warnings`,
 `fatal_errors`, `stats_json` (`mode` = `full` or `refresh`,
+`files.config` = configuration files parsed / with syntax errors / skipped,
 per-status/per-language file counts, resolution statistics, phase timings,
 peak RSS, index size, and for refreshes a `refresh` object with
 changed/added/removed/unchanged files, reused symbol ids, changed names,
@@ -60,7 +61,7 @@ One row per visited file (excluded *directories* are not traversed).
 | column | meaning |
 |---|---|
 | `path`, `dir`, `name` | project-relative |
-| `language` | `javascript`, `typescript`, `tsx`, `python`, `java`, `c`, `cpp`, or NULL |
+| `language` | `javascript`, `typescript`, `tsx`, `python`, `java`, `c`, `cpp`, `xml`, `yaml` (configuration), or NULL |
 | `size_bytes`, `mtime_s` | metadata |
 | `fingerprint` | FNV-1a 64 of the content (hex). Only for files that were read. Used with the size, language and extractor version by `proj refresh` for change detection, never for security |
 | `status` | see below |
@@ -87,14 +88,18 @@ File statuses:
 `visibility`, `is_static`, `is_definition` (0 for prototypes and abstract or
 interface methods), `param_count` (NULL when unknown or variadic),
 `container` (logical owner for C++ out-of-line members such as
-`ns::UserStore`), and `signature`.
+`ns::UserStore`; the class of a Spring bean), `signature`, and `param_types`
+(declared parameter types, comma-separated: Java types are normalized
+(`List[]`, `String...`), C/C++ types are kept as written without names and
+default values; used to select overloads).
 
 Kinds: `module` (one per file; owns top-level code), `function`, `method`,
 `constructor`, `class`, `interface`, `struct`, `union`, `enum`, `type_alias`,
 `namespace`, `variable` (only module-level values needed for resolution:
 router objects, constructed instances), `object` (named object literals),
-`route_handler` and `middleware` (inline functions passed to route
-registrations).
+`route_handler` and `middleware` (inline functions and lambdas passed to
+route registrations), and `bean` (a Spring XML bean: `name` is its id,
+`container` its class).
 
 Qualified names are scope-qualified: `UserService.findById` (JS/TS),
 `app.services.user.UserService.get` (Python, module path),
@@ -148,7 +153,9 @@ without re-parsing unchanged files:
 ### edges (symbol → symbol)
 `kind`, `src_symbol_id`, `dst_symbol_id` (NULL unless exactly one target),
 `file_id`/`line`/`col` (the site), `status`, `target_name`, `receiver`,
-`receiver_kind`, `target_text` (expression as written), `arg_count`, `note`
+`receiver_kind`, `target_text` (expression as written), `arg_count`,
+`arg_types` (static argument types at the call site, comma-separated: a type
+name, `$name` for a variable whose declared type is looked up, or `?`), `note`
 (the reason for the status). `edge_candidates(edge_id, symbol_id)` lists
 every candidate of an `ambiguous` edge, ordered by file path and line.
 
@@ -161,8 +168,10 @@ result is the receiver of `c()`).
 Receiver kinds: `none` (plain call), `this`, `super`, `this_member`
 (`this.x.m()`, `self.x.m()`), `identifier`, `qualified` (`a.b.m()`), `call`
 (chained on another call), `typed` (`new X().m()`, `((X) o).m()`, `(o as
-X).m()`), `module_require` (`require('./x')(...)`), and `expression` (any
-other receiver; recorded as unresolved).
+X).m()`), `module_require` (`require('./x')(...)`), `config_class` / `config_bean`
+(`configures` edges: the receiver is a class or bean name from a
+configuration file), and `expression` (any other receiver; recorded as
+unresolved).
 
 Semantics: `A -[calls]-> B` means a call site inside A is statically
 associated with B. It does not prove that the call happens at runtime.
@@ -177,6 +186,7 @@ associated with B. It does not prove that the call happens at runtime.
 | `uses_middleware` | A registers middleware B for a router or route |
 | `mounts` | A mounts a router defined in module B (`app.use('/api', router)`, `register_blueprint`, `include_router`) |
 | `loads_module` | module A imports module B at top level (JS/TS, Python), which executes B's top-level code |
+| `configures` | configuration file (or Spring bean) A wires class or method B: the container creates it (servlets, filters, listeners, beans), calls a lifecycle method (`contextInitialized`, `init`, `init-method`), or injects another bean |
 
 | status | meaning |
 |---|---|
@@ -195,13 +205,29 @@ the specification is split into `edges` and `file_deps`.
   `Blueprint` with `url_prefix`, `FastAPI`, `APIRouter` with `prefix`).
 - `mounts`: `app.use([prefix,] x)` / `register_blueprint` / `include_router`
   arguments, classified by the resolver as `router` (a mount),
-  `middleware`, or `unresolved`. `raw_note` keeps the extracted note.
+  `middleware`, or `unresolved`; Django `include()` targets have
+  `target_kind = 'module'` and become `urlconf` (the included URLconf's module
+  symbol). `raw_note` keeps the extracted note.
+- `routers` also holds Pyramid route names (`kind = 'pyramid_route'`, `name`
+  the route name, `prefix` the pattern) that `add_view` / `@view_config`
+  routes refer to.
 - `routes`: `framework` (`express`, `nestjs`, `flask`, `fastapi`, `django`,
-  `spring`, `jaxrs`), `method` (`ANY` when unrestricted), `path` as declared,
+  `spring`, `jaxrs`; configuration: `servlet`, `struts`, `struts2`,
+  `spring_xml`, `openapi`, `serverless`, `config`; code without annotations:
+  `httpserver`, `spark`, `javalin`, `java_http`, `tornado`, `webapp2`,
+  `webpy`, `falcon`, `pyramid`, `bottle`, `http_server`, `wsgi`,
+  `python_handlers`, `cpp-httplib`, `crow`, `drogon`, `pistache`, `cpp_http`,
+  `cpp_table`, `dispatch_table`, `dispatch`), `method` (`ANY` when
+  unrestricted; a handler class serving several methods gives one row per
+  method, the extra rows pointing to the first through `origin_route_id`;
+  `raw_method` keeps the declared method), `path` as declared,
   `full_path` with the resolved prefix, `mount_prefix`, `mount_status`
   (`resolved`, `class_mapping`, `none`, `unmounted`, `unknown_registrar`),
   `mount_id`, the registration site, `scope_symbol_id`, `handler_*`
-  (`handler_status` uses the edge statuses), and `confidence` (`recognized`
+  (`handler_kind`: `identifier`, `member`, `inline`, `require`, or a
+  reference by name: `class` (dispatched to its request methods),
+  `qualified`, `name`, `file`, `bean`, `method_ref`; `handler_status` uses
+  the edge statuses), and `confidence` (`recognized`
   when the receiver is a known app/router or the class is a controller,
   `heuristic` otherwise). A router mounted at several prefixes gets one row
   per full path. The extra rows point to the declared route through
@@ -221,7 +247,9 @@ possible.
 
 ### entry_points
 `kind` (`main_function`, `main_guard`, `module_main`, `package_main`,
-`package_bin`, `package_script`, `framework_app`, `server_start`),
+`package_bin`, `package_script`, `framework_app`, `server_start`,
+`deployment_descriptor` (`web.xml`), `route_config` (another configuration
+file that declares routes)),
 `symbol_id`, `file_id`, `line`, `reason`.
 
 ## Integrity
@@ -251,5 +279,8 @@ analysis also runs `quick_check` before replacing the index.
 
 Schema history: version 1 (initial); version 2 added the `raw_*`,
 `generated`, `receiver_edge_id`, `declared_prefix` and `origin_route_id`
-columns that refresh needs. A version-1 index must be rebuilt with
-`proj add <name> <path> --reanalyze`.
+columns that refresh needs; version 3 added `symbols.param_types`,
+`edges.arg_types` (overload selection) and `routes.raw_method` (per-method
+routes of handler classes), the `configures` edge kind and configuration
+files. An older index must be rebuilt with `proj add <name> <path>
+--reanalyze`.

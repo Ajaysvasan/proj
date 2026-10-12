@@ -216,7 +216,8 @@ void Scanner::walk_dir(const fs::path& abs, const std::string& rel, int depth,
     } else if (e.size > options_.max_file_size) {
       e.status = file_status::kTooLarge;
       e.note = "larger than the " + std::to_string(options_.max_file_size) + " byte limit";
-      diagnostics_.add({"warn", "resource", "file_too_large", child_rel, 0,
+      // Large XML/YAML files are usually data, not configuration: informational only.
+      diagnostics_.add({is_config_language(e.language) ? "info" : "warn", "resource", "file_too_large", child_rel, 0,
                         "skipped: " + std::to_string(e.size) + " bytes exceeds the " +
                             std::to_string(options_.max_file_size) + " byte limit"});
     } else {

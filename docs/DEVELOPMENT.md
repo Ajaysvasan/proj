@@ -13,6 +13,7 @@ cli/               TypeScript CLI and Ink UI (npm, package-lock.json)
   src/  test/
 fixtures/          small self-contained projects used by tests
   express-api/  python-app/  java-spring/  cpp-app/
+  legacy-java/  legacy-python/  legacy-cpp/   (servlets, XML/YAML routes, dispatch, overloads)
 bench/             synthetic repository generator and benchmark runner
 docs/
 build/             (generated) CMake build trees and downloaded sources
@@ -35,6 +36,7 @@ the engine; nothing is installed system-wide):
 | SQLite amalgamation | 3.50.4 (FTS5 enabled, extension loading disabled) |
 | Tree-sitter runtime | 0.25.10 |
 | tree-sitter-javascript / typescript / python / java / cpp / c | 0.25.0 / 0.23.2 / 0.25.0 / 0.23.5 / 0.23.4 / 0.24.1 |
+| tree-sitter-xml / yaml (tree-sitter-grammars) | 0.7.0 / 0.7.2 |
 | nlohmann/json | 3.11.3 |
 | Catch2 (tests only) | 3.8.1 (amalgamated) |
 
@@ -75,13 +77,14 @@ Options: `-DPROJ_BUILD_TESTS=OFF` skips Catch2 and the test binary;
 ## Test
 
 ```sh
-# Engine: 62 Catch2 test cases (paths, ignore rules, scanner, extractors for all
+# Engine: 71 Catch2 test cases (paths, ignore rules, scanner, extractors for all
 # languages, schema/migrations, registry, end-to-end indexing of every fixture,
 # queries, traversal limits, failure handling, protocol errors, call
-# resolution, refresh equivalence) plus 4 leak checks.
+# resolution, refresh equivalence, legacy routing and overloads) plus 4 leak checks.
 ctest --test-dir build/engine --output-on-failure  # both test groups
 ./build/engine/tests/proj_engine_tests "~[leak]"   # everything except the leak checks
 ./build/engine/tests/proj_engine_tests "[python]"  # by tag
+./build/engine/tests/proj_engine_tests "[legacy]"  # configuration routes, code registration, dispatch, overloads
 
 # CLI: unit, engine-client (fake crashing/garbage/hanging engines), CLI
 # integration (spawns the real `proj`), and interactive UI tests.
