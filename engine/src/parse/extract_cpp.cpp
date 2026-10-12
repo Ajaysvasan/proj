@@ -35,7 +35,7 @@ const std::unordered_set<std::string_view> kCatchAll = {"*", "std::exception", "
 class CppExtractor {
  public:
   CppExtractor(const ExtractInput& in, FileFacts& out)
-      : in_(in), out_(out), src_(in.source), cpp_(in.language == Language::Cpp) {}
+      : in_(in), out_(out), src_(in.source) {}
 
   void run() {
     add_module_symbol(in_, out_);
@@ -47,7 +47,6 @@ class CppExtractor {
   const ExtractInput& in_;
   FileFacts& out_;
   std::string_view src_;
-  bool cpp_;
   std::vector<Scope> scopes_;
   std::unordered_map<const void*, TryCtx> pending_try_;
   std::vector<TryCtx> tries_;
