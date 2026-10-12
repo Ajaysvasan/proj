@@ -68,11 +68,12 @@ export function buildProgram(run: (code: number) => void): Command {
 
   program
     .command('show')
-    .description('open the interactive explorer for an indexed project')
+    .description('open the interactive explorer (code map, search, flows) for an indexed project')
     .argument('<project>', 'registered project name')
+    .argument('[endpoint...]', 'open an API endpoint directly, e.g. "GET /api/users/42" (with --no-tui: print its flow)')
     .addOption(new Option('--no-tui', 'print a plain-text overview instead of the interactive UI'))
     .option('--check', 'verify index integrity (dangling references, schema) instead of opening the UI')
-    .action(async (project: string, opts) => run(await showCommand(project, opts, makeContext(global()))));
+    .action(async (project: string, endpoint: string[], opts) => run(await showCommand(project, endpoint ?? [], opts, makeContext(global()))));
 
   return program;
 }

@@ -468,6 +468,11 @@ json Engine::dispatch(const std::string& op, const json& args, const fs::path& d
   }
   if (op == "entry_points") return open_index(data_dir, args).entry_points(get_int(args, "limit", 100));
   if (op == "routes") return open_index(data_dir, args).routes(get_int(args, "limit", 100), get_int(args, "offset", 0));
+  if (op == "overview") {
+    std::string focus = args.contains("focus") && args["focus"].is_string() ? args["focus"].get<std::string>() : "";
+    return open_index(data_dir, args).overview(focus, static_cast<int>(get_int(args, "max_nodes", 14)),
+                                               get_bool(args, "direct_files", false));
+  }
   if (op == "route_flow") {
     auto& idx = open_index(data_dir, args);
     return not_null(idx.route_flow(required_id("route_id"), traverse_options()), "route");

@@ -36,6 +36,7 @@ itself.
 | `index/indexer.*` | Orchestrates a full run or a refresh; builds a private file and atomically renames it over the old index |
 | `index/registry.*` | Projects, runs and bounded per-run diagnostics |
 | `query/query.*` | Search, symbol/file details, edges, bounded BFS traversal, route flow, exceptions, startup path, integrity check, source snippets |
+| `query/overview.cpp` | Code map: the project's directories grouped into a bounded number of parts, with per-part counts and aggregated links between parts |
 | `protocol/protocol.*` | JSON envelope, argument validation, error categories, read-only index cache in serve mode |
 
 ## Analysis data flow
@@ -214,6 +215,50 @@ Every list is capped by `limit` (at most 500). The UI asks for 15 per kind,
 waits 120 ms after the last keystroke, and discards responses to superseded
 queries.
 
+In the UI's search box, `/show <endpoint>` (for example `/show GET
+/api/users/42`) searches routes only; `proj show <project> <endpoint>` runs
+the same search and opens the best match (or prints its flow with
+`--no-tui`).
+
+## Code map
+
+The home screen draws the project as a graph of its main parts. The engine's
+`overview` operation (`query/overview.cpp`) computes the parts; the CLI only
+lays them out.
+
+- **Parts.** Analyzed files under the focus directory form a directory tree;
+  chains of directories with a single child and no files are collapsed
+  (`src/main/java/com/acme` becomes one step). The largest group is expanded
+  into its children while the count stays within `max_nodes` (2 to 40, 14 by
+  default; the UI picks 8 to 16 by terminal width). When the top level alone
+  has too many parts, the largest are kept and the rest become one "other"
+  group. Files directly in an expanded directory form a "files" group.
+- **Counts.** Per part: files, symbols, languages, entry points, routes
+  declared there, and route handlers defined there.
+- **Links.** Resolved and heuristic `calls`, `instantiates`,
+  `registers_route`, `configures`, `mounts`, `uses_middleware` and
+  `loads_module` edges, counted between the parts of their source file and
+  target symbol. Inside a zoomed-in part, links to the rest of the project
+  go to an "outside" node.
+- **Files.** With `direct_files`, or when the focus has no subdirectories,
+  the result lists the files instead.
+
+The CLI renderer (`cli/src/ui/graph.ts`) is a layered (Sugiyama-style)
+layout in plain text: cycles are broken by depth-first search, parts are
+layered by longest path over each part's significant links (its strongest,
+or at least 5 % of its outgoing count), long links pass through dummy
+positions, and four barycenter sweeps order each row. Rows wider than the
+terminal wrap. Links run along horizontal buses in the gap between rows: a
+link joins its target's bus when three or more links converge on that
+target (and more than leave its source), otherwise its source's bus;
+overlapping buses get separate lanes. Lines are
+box-drawing characters (ASCII with `PROJ_ASCII=1`), with `▼` into a part and
+`▲` for a link that goes back up a cycle. By default each part draws its
+strongest link plus the selected part's top 6; `a` cycles to 3 per part or
+all, and the details panel lists every link of the selected part.
+`cli/src/ui/codemap.tsx` handles selection, zoom (Enter, Backspace) and the
+details panel.
+
 ## Memory model
 
 - One source file, one syntax tree and one file's facts in memory at a time.
@@ -286,7 +331,7 @@ Operations: `info`, `add_project`, `refresh_project` (optional
 `max_affected_fraction` in (0, 1], default 0.4), `list_projects`, `project_status`,
 `list_runs`, `get_run`, `summary`, `search`, `symbol`, `edges`, `traverse`,
 `file`, `file_deps`, `entry_points`, `routes`, `route_flow`, `exceptions`,
-`startup_path`, `check_index`, `snippet`. Their arguments are validated in
+`startup_path`, `overview`, `check_index`, `snippet`. Their arguments are validated in
 `engine/src/protocol/protocol.cpp`.
 
 The CLI treats a nonzero engine exit, a signal, invalid JSON, an envelope

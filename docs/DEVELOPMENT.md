@@ -77,17 +77,19 @@ Options: `-DPROJ_BUILD_TESTS=OFF` skips Catch2 and the test binary;
 ## Test
 
 ```sh
-# Engine: 71 Catch2 test cases (paths, ignore rules, scanner, extractors for all
+# Engine: 72 Catch2 test cases (paths, ignore rules, scanner, extractors for all
 # languages, schema/migrations, registry, end-to-end indexing of every fixture,
 # queries, traversal limits, failure handling, protocol errors, call
-# resolution, refresh equivalence, legacy routing and overloads) plus 4 leak checks.
+# resolution, refresh equivalence, legacy routing and overloads, code map)
+# plus 4 leak checks.
 ctest --test-dir build/engine --output-on-failure  # both test groups
 ./build/engine/tests/proj_engine_tests "~[leak]"   # everything except the leak checks
 ./build/engine/tests/proj_engine_tests "[python]"  # by tag
 ./build/engine/tests/proj_engine_tests "[legacy]"  # configuration routes, code registration, dispatch, overloads
 
-# CLI: unit, engine-client (fake crashing/garbage/hanging engines), CLI
-# integration (spawns the real `proj`), and interactive UI tests.
+# CLI: 45 tests: unit, code map layout, engine-client (fake crashing/garbage/
+# hanging engines), CLI integration (spawns the real `proj`), and interactive
+# UI tests.
 cd cli && npm test
 ```
 

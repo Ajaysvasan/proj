@@ -43,6 +43,7 @@ add_library(proj_core STATIC
   src/index/resolver_overloads.cpp
   src/index/indexer.cpp
   src/query/query.cpp
+  src/query/overview.cpp
   src/protocol/protocol.cpp)
 target_include_directories(proj_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(proj_core PUBLIC PROJ_VERSION="${PROJECT_VERSION}")

@@ -144,4 +144,60 @@ describe('interactive UI', () => {
     }
     assert.equal(session.running, false, 'engine process is closed after exit');
   });
+
+  it('shows the code map, zooms in and out, and opens API endpoints with /show', async () => {
+    const legacyData = tempDir('ui-legacy');
+    const root = copyFixture('legacy-java', tempDir('fx-legacy'));
+    const added = await runEngine('add_project', { name: 'legacy', path: root }, { enginePath: ENGINE, dataDir: legacyData });
+    assert.equal(added.status, 'ok');
+    const st = (await runEngine('project_status', { project: 'legacy' }, { enginePath: ENGINE, dataDir: legacyData })).result;
+    const stdout = new FakeStdout();
+    stdout.rows = 60;
+    const stdin = new FakeStdin();
+    const session = new EngineSession({ enginePath: ENGINE, dataDir: legacyData, timeoutMs: 15000 });
+    const app = render(<App session={session} project="legacy" summary={st.index} rootPath={st.project.root_path} />, {
+      stdout: stdout as any,
+      stdin: stdin as any,
+      debug: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+    });
+    const exitPromise = app.waitUntilExit();
+    try {
+      // The home screen draws the project's parts as boxes joined by arrows.
+      let frame = await waitFor(stdout, (f) => f.includes('Code map · whole project') && f.includes('legacy/web'), 'code map');
+      assert.match(frame, /legacy\/service/);
+      assert.match(frame, /▼/);
+      // The part where routes and startup come in is selected first.
+      frame = await waitFor(stdout, (f) => f.includes('legacy/server  src/main/java/com/acme/legacy/server'), 'selected part details');
+      assert.match(frame, /calls → /);
+      stdin.send(KEY.enter); // a leaf directory: list its files
+      frame = await waitFor(stdout, (f) => f.includes('Code map · src/main/java/com/acme/legacy/server') && f.includes('EmbeddedServer.java'), 'files of the part');
+      stdin.send('\u007f'); // Backspace: zoom out
+      await waitFor(stdout, (f) => f.includes('Code map · whole project'), 'back to the whole project');
+
+      stdin.send('/');
+      await waitFor(stdout, (f) => f.includes('type to search'), 'search focus');
+      stdin.send('/show GET /api/users/42');
+      frame = await waitFor(stdout, (f) => f.includes('API endpoints matching "GET /api/users/42"') && f.includes('UserServlet.doGet'), '/show results');
+      stdin.send(KEY.enter);
+      frame = await waitFor(stdout, (f) => f.includes('handler     com.acme.legacy.web.UserServlet.doGet'), 'route view');
+      assert.match(frame, /AuthFilter/);
+
+      stdin.send('h');
+      await waitFor(stdout, (f) => f.includes('Search: /show GET /api/users/42') && !f.includes('handler     '), 'home with the query');
+      stdin.send(KEY.escape); // leaves the search box
+      await waitFor(stdout, (f) => !f.includes('type to search'), 'search box left');
+      stdin.send('r');
+      frame = await waitFor(stdout, (f) => f.includes('API routes') && f.includes('→ OrderServlet.service'), 'routes list with handler methods');
+      assert.match(frame, /GET {5}\/api\/users\/\*  → UserServlet\.doGet/);
+
+      stdin.send('q');
+      const exited = await Promise.race([exitPromise.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 5000))]);
+      assert.equal(exited, true, 'app exits on q');
+    } finally {
+      app.unmount();
+      await session.close();
+    }
+  });
 });

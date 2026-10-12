@@ -328,3 +328,60 @@ TEST_CASE("refresh of legacy projects matches a full analysis", "[legacy][refres
     CHECK(only_full.empty());
   }
 }
+
+TEST_CASE("code map: parts of the project and the links between them", "[legacy][query][overview]") {
+  auto a = index_fixture(fixture("legacy-java"));
+  IndexReader reader(a->result["result"]["index_path"].get<std::string>());
+  json map = reader.overview("", 14);
+  std::map<std::string, json> by_label;
+  for (const auto& n : map["nodes"]) by_label[n["label"].get<std::string>()] = n;
+  REQUIRE(map["nodes"].size() <= 14);
+  // Single-directory chains collapse: src/main/java/com/acme/legacy/web -> "legacy/web".
+  REQUIRE(by_label.count("legacy/web"));
+  REQUIRE(by_label.count("webapp/WEB-INF"));
+  CHECK(by_label["legacy/web"]["path"] == "src/main/java/com/acme/legacy/web");
+  CHECK(by_label["webapp/WEB-INF"]["routes_declared"].get<int64_t>() > 0);
+  CHECK(by_label["legacy/web"]["route_handlers"].get<int64_t>() > 0);
+  auto link = [&](const std::string& from, const std::string& to) -> json {
+    for (const auto& e : map["edges"]) {
+      if (e["from"] == by_label[from]["id"] && e["to"] == by_label[to]["id"]) return e;
+    }
+    return nullptr;
+  };
+  // web.xml registers routes to the servlets and configures filters and listeners.
+  json wiring = link("webapp/WEB-INF", "legacy/web");
+  REQUIRE(wiring.is_object());
+  CHECK(wiring["kinds"]["registers_route"].get<int64_t>() > 0);
+  CHECK(wiring["kinds"]["configures"].get<int64_t>() > 0);
+  CHECK(link("legacy/web", "legacy/service").is_object());
+  CHECK(link("legacy/service", "legacy/dao").is_object());
+
+  // Zooming into a leaf part lists its files; code outside becomes one node.
+  json server = reader.overview("src/main/java/com/acme/legacy/server", 14);
+  REQUIRE(server["files"].is_array());
+  CHECK(server["files"].size() == 15);
+  CHECK(server["parent"] == "src/main/java/com/acme/legacy");
+  bool outside = false;
+  for (const auto& n : server["nodes"]) outside = outside || n["kind"] == "outside";
+  CHECK(outside);
+  json direct = reader.overview("src/main/resources", 14, true);
+  CHECK(direct["files"].size() == 3);  // routes.yaml, struts.xml, applicationContext.xml (not api/)
+
+  // A small budget groups the smallest directories into "other".
+  json small = reader.overview("src/main/java/com/acme/legacy", 4);
+  CHECK(small["nodes"].size() <= 5);  // up to 4 parts + the rest of the project
+  bool other = false;
+  for (const auto& n : small["nodes"]) other = other || n["kind"] == "other";
+  CHECK(other);
+
+  // Route lists name the method that handles the route.
+  json routes = reader.routes(500, 0);
+  bool found = false;
+  for (const auto& r : routes["routes"]) {
+    if (r["full_path"] == "/api/users/*" && r["method"] == "GET") {
+      found = true;
+      CHECK(r["handler"]["qualified_name"] == "com.acme.legacy.web.UserServlet.doGet");
+    }
+  }
+  CHECK(found);
+}

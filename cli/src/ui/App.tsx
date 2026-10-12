@@ -5,6 +5,7 @@ import { useLatest } from './hooks.js';
 
 import type { EngineSession } from '../engine/client.js';
 import { formatCount, truncate } from '../format.js';
+import { INITIAL_MAP } from './codemap.js';
 import { EntryPointsView, FileView, HELP_LINES, HomeView, type HomeState, RouteView, RoutesView, StatusView, SymbolView, type View } from './views.js';
 
 export interface AppProps {
@@ -13,12 +14,16 @@ export interface AppProps {
   /** `index` part of the engine's project_status result. */
   summary: any;
   rootPath: string;
+  /** Open this route first (proj show <project> <endpoint>). */
+  initialRoute?: number;
+  /** Start with this text in the search box. */
+  initialQuery?: string;
 }
 
 function crumb(v: View): string {
   switch (v.kind) {
     case 'home':
-      return 'search';
+      return 'home';
     case 'symbol':
       return `symbol #${v.id}`;
     case 'file':
@@ -34,13 +39,13 @@ function crumb(v: View): string {
   }
 }
 
-export function App({ session, project, summary, rootPath }: AppProps): React.ReactElement {
+export function App({ session, project, summary, rootPath, initialRoute, initialQuery }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [size, setSize] = useState({ columns: stdout?.columns || 100, rows: stdout?.rows || 30 });
-  const [stack, setStack] = useState<View[]>([{ kind: 'home' }]);
+  const [stack, setStack] = useState<View[]>(initialRoute !== undefined ? [{ kind: 'home' }, { kind: 'route', id: initialRoute }] : [{ kind: 'home' }]);
   const [help, setHelp] = useState(false);
-  const [home, setHome] = useState<HomeState>({ query: '', typing: false, selected: 0 });
+  const [home, setHome] = useState<HomeState>({ query: initialQuery ?? '', typing: false, selected: 0, map: INITIAL_MAP });
   const typing = home.typing;
   const typingRef = useRef(false);
   const setTyping = useCallback((value: boolean) => {
@@ -127,7 +132,9 @@ export function App({ session, project, summary, rootPath }: AppProps): React.Re
     : typing && view.kind === 'home'
       ? 'type to search · Up/Down select · Enter open · Esc leave search'
       : view.kind === 'home'
-        ? '/ search · e entries · r routes · s status · ? help · q quit'
+        ? home.query.trim() === ''
+          ? 'arrows select · Enter zoom/open · Backspace out · a links · / search · /show endpoint · e entries · r routes · ? help · q quit'
+          : '/ search · Up/Down select · Enter open · Esc clear · e entries · r routes · s status · ? help · q quit'
         : 'Up/Down select · Enter open · Tab switch · Esc back · h home · ? help · q quit';
   return (
     <Box flexDirection="column" width={width}>

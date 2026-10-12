@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 import type { EngineSession } from '../engine/client.js';
 import { formatCount, glyph, truncate } from '../format.js';
+import { CodeMap, type MapState } from './codemap.js';
 import { clamp, ErrorLine, FlowTree, Loading, SelectList, Tabs } from './components.js';
 import { useLatest, useQuery } from './hooks.js';
 import { layoutTree, type SymbolBrief, type TraverseNode } from './tree.js';
@@ -29,6 +30,35 @@ function loc(path: string, line?: number | null): string {
   return line ? `${path}:${line}` : path;
 }
 
+/**
+ * The method or function that handles a route: "UserServlet.doGet",
+ * "ProductView.get", "api::ping"; `fallback` (the handler as written) when it
+ * is not resolved.
+ */
+export function handlerLabel(qualified?: string | null, kind?: string | null, fallback?: string | null): string {
+  if (!qualified) return fallback ?? '?';
+  if (kind === 'route_handler') return 'inline handler';
+  const sep = qualified.includes('::') ? '::' : '.';
+  const parts = qualified.split(sep);
+  return parts.length <= 2 ? qualified : parts.slice(-2).join(sep);
+}
+
+/** A compact middleware name: the resolved method (AuthFilter.doFilter) or, for a class, its simple name. */
+export function middlewareLabel(m: { kind?: string; name?: string | null; text: string; symbol?: { qualified_name?: string; kind?: string } | null }): string {
+  if (m.kind === 'class') {
+    if (m.symbol?.qualified_name) return handlerLabel(m.symbol.qualified_name, m.symbol.kind, m.text);
+    const name = m.name ?? m.text;
+    return name.slice(Math.max(name.lastIndexOf('.'), name.lastIndexOf(':')) + 1);
+  }
+  return m.text;
+}
+
+/** `/show <endpoint>` (or `show <endpoint>`) in the search box: API endpoints only. */
+export function parseShowCommand(query: string): string | null {
+  const m = /^\/show(?:\s+(.*))?$/i.exec(query) ?? /^show\s+(.+)$/i.exec(query);
+  return m ? (m[1] ?? '').trim() : null;
+}
+
 // ---------------------------------------------------------------------------
 // Home: search
 // ---------------------------------------------------------------------------
@@ -40,7 +70,7 @@ type ResultItem =
 
 function resultText(r: ResultItem, width: number): string {
   if (r.type === 'route') {
-    const handler = r.handler ? `${glyph.arrow} ${r.handler}` : '';
+    const handler = `${glyph.arrow} ${r.handler ?? '?'}`;
     return `route   ${r.method} ${r.full_path}  ${handler}  ${loc(r.file, r.line)}${r.status !== 'resolved' ? ` [handler ${r.status}]` : ''}`;
   }
   if (r.type === 'file') return `file    ${r.path}  ${r.language ?? 'unsupported'}${r.status !== 'parsed' ? ` [${r.status}]` : ''}`;
@@ -55,6 +85,8 @@ export interface HomeState {
   query: string;
   typing: boolean;
   selected: number;
+  /** Code map shown while the search box is empty. */
+  map: MapState;
 }
 
 export function HomeView(
@@ -74,13 +106,30 @@ export function HomeView(
   const setSelected = (f: (n: number) => number) => props.setState((s) => ({ ...s, selected: f(s.selected) }));
 
   const trimmed = queryText.trim();
-  const search = useQuery<any>(props.session, 'search', trimmed ? { project: props.project, query: trimmed, limit: 15 } : null, trimmed, 120);
+  const endpoint = parseShowCommand(trimmed);
+  const searchText = endpoint ?? trimmed;
+  const search = useQuery<any>(
+    props.session,
+    'search',
+    searchText ? { project: props.project, query: searchText, limit: 15, ...(endpoint !== null ? { kinds: ['route'] } : {}) } : null,
+    `${endpoint !== null ? 'show:' : ''}${searchText}`,
+    120,
+  );
   const items: ResultItem[] = useMemo(() => {
     const d = search.data;
     if (!d) return [];
     const out: ResultItem[] = [];
     for (const r of d.routes ?? []) {
-      out.push({ type: 'route', id: r.id, method: r.method, full_path: r.full_path, file: r.file, line: r.line, handler: r.handler_name, status: r.handler_status });
+      out.push({
+        type: 'route',
+        id: r.id,
+        method: r.method,
+        full_path: r.full_path,
+        file: r.file,
+        line: r.line,
+        handler: handlerLabel(r.handler_qualified, r.handler_symbol_kind, r.handler_name),
+        status: r.handler_status,
+      });
     }
     for (const s of d.symbols ?? []) out.push({ type: 'symbol', sym: s });
     for (const f of d.files ?? []) out.push({ type: 'file', id: f.id, path: f.path, language: f.language, status: f.status });
@@ -118,28 +167,32 @@ export function HomeView(
     { isActive: props.active },
   );
 
-  const counts = search.data
-    ? `${(search.data.symbols ?? []).length} symbols, ${(search.data.files ?? []).length} files, ${(search.data.routes ?? []).length} routes`
-    : '';
+  const counts = !search.data
+    ? ''
+    : endpoint !== null
+      ? `${(search.data.routes ?? []).length} API endpoints matching "${endpoint}" (Enter opens the route: handler, filters, call flow)`
+      : `${(search.data.symbols ?? []).length} symbols, ${(search.data.files ?? []).length} files, ${(search.data.routes ?? []).length} routes (case-insensitive substring; exact names rank first)`;
+  const setMap = (f: (m: MapState) => MapState) => props.setState((s) => ({ ...s, map: f(s.map) }));
   return (
     <Box flexDirection="column">
       <Box>
         <Text bold color={typing ? 'cyan' : undefined}>{'Search: '}</Text>
         <Text>{queryText}</Text>
-        {typing ? <Text inverse> </Text> : <Text dimColor>{queryText ? '' : ' press / to search symbols, files and routes'}</Text>}
+        {typing ? (
+          <Text inverse> </Text>
+        ) : (
+          <Text dimColor>{queryText ? '' : ` press / to search symbols, files and routes · /show GET /api/users opens an API endpoint (${formatCount(props.routeCount)} routes, ${formatCount(props.entryCount)} entry points)`}</Text>
+        )}
       </Box>
       {trimmed === '' ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text>Examples: getUser · UserService.find · routes/users · GET /api/users/:id · /api/users/42</Text>
-          <Text>{`  e  entry points (${formatCount(props.entryCount)})`}</Text>
-          <Text>{`  r  API routes (${formatCount(props.routeCount)})`}</Text>
-          <Text>{'  s  analysis status and known limitations'}</Text>
-        </Box>
+        <CodeMap {...props} active={props.active && !typing} height={props.height - 1} state={props.state.map} setState={setMap} />
+      ) : endpoint === '' ? (
+        <Text dimColor>Type an endpoint after /show, for example: /show GET /api/users/42 · /show /orders · /show login.do</Text>
       ) : search.error ? (
         <ErrorLine message={search.error} />
       ) : (
         <Box flexDirection="column">
-          <Text dimColor>{search.loading ? 'Searching...' : `${counts} (case-insensitive substring; exact names rank first)`}</Text>
+          <Text dimColor wrap="truncate">{search.loading ? 'Searching...' : truncate(counts, props.width)}</Text>
           <SelectList items={items} selected={selected} height={props.height - 3} width={props.width} render={(r) => resultText(r, props.width)} empty="No matches." />
         </Box>
       )}
@@ -428,7 +481,7 @@ export function RouteView(props: ViewProps & { id: number }) {
       : { text: `handler     not resolved: ${r.handler.text ?? '?'} [${r.handler.status}]${r.handler.note ? ` — ${r.handler.note}` : ''}`, color: 'red' },
   );
   if (r.middleware.length > 0) {
-    lines.push({ text: `middleware  ${r.middleware.map((m: any) => `${m.scope}:${m.text}${m.status === 'resolved' ? '' : ` [${m.status}]`}`).join(' → ')}` });
+    lines.push({ text: `middleware  ${r.middleware.map((m: any) => `${m.scope}:${middlewareLabel(m)}${m.status === 'resolved' ? '' : ` [${m.status}]`}`).join(' → ')}` });
   } else {
     lines.push({ text: 'middleware  none recognized', color: 'gray' });
   }
@@ -522,7 +575,7 @@ export function RoutesView(props: ViewProps) {
         height={props.height - 2}
         width={props.width}
         render={(r) =>
-          `${r.method.padEnd(7)} ${r.full_path}  ${glyph.arrow} ${r.handler_name ?? '?'}${r.handler_status !== 'resolved' ? ` [${r.handler_status}]` : ''}  ${loc(r.file, r.line)}  ${r.framework}${r.mount_status === 'unmounted' || r.mount_status === 'unknown_registrar' ? ` [prefix ${r.mount_status}]` : ''}`
+          `${r.method.padEnd(7)} ${r.full_path}  ${glyph.arrow} ${handlerLabel(r.handler?.qualified_name, r.handler?.kind, r.handler_name)}${r.handler_status !== 'resolved' ? ` [${r.handler_status}]` : ''}  ${loc(r.file, r.line)}  ${r.framework}${r.mount_status === 'unmounted' || r.mount_status === 'unknown_registrar' ? ` [prefix ${r.mount_status}]` : ''}`
         }
         color={(r) => (r.handler_status !== 'resolved' ? 'yellow' : undefined)}
         empty="No routes were recognized for the supported frameworks."
@@ -553,7 +606,8 @@ export function StatusView(props: ViewProps & { summary: any }) {
     ' - Dynamic dispatch, callbacks, reflection, dependency injection and computed names are often unresolved.',
     ' - "heuristic" edges were matched by name only; "ambiguous" edges list every candidate.',
     ' - Exceptions: only explicit throw/raise sites; callee sites are possible, not guaranteed.',
-    ' - Routes: Express-style, NestJS, Flask, FastAPI, Django path(), Spring MVC and JAX-RS patterns only.',
+    ' - Routes: framework and configuration patterns listed in docs/LANGUAGE_SUPPORT.md; others are not found.',
+    ' - Routes found by heuristics (custom config entries, path-dispatch branches) are labeled heuristic.',
     ' - tsconfig path aliases, Python sys.path changes and C/C++ build include paths are not read.',
   ];
   useInput(() => undefined, { isActive: props.active });
@@ -586,7 +640,10 @@ export const HELP_LINES = [
   '  u            show or hide unresolved and external calls',
   '  f            open the containing file (symbol view)',
   '  o            open the handler symbol (route view)',
-  'Home',
+  'Home (code map: the main parts of the project and the calls, route registrations and wiring between them)',
+  '  arrows       select a part      Enter  zoom into it / list its files      Backspace  zoom out',
+  '  a            links drawn: strongest per part, top 3, all (the selected part always shows all of its links)',
+  '  /show <endpoint>  find an API endpoint, e.g. /show GET /api/users/42, and open its flow with Enter',
   '  e            entry points     r  API routes     s  status and limitations',
   'Markers: [unresolved] [ambiguous] [heuristic] [external]; "shown above" marks an already expanded node (cycle).',
 ];

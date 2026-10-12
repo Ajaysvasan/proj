@@ -80,6 +80,13 @@ plus shared registry in the user data directory. Details:
 - [x] Schema v3; refresh equals full analysis on the legacy fixtures (randomized); Clang 22/libc++ `-Werror` build checked locally with Zig's Clang
 - [ ] `@WebFilter`, servlet context paths, Spring XML wiring used for field types, JSON route files
 
+## Phase 10: Code map and endpoint navigation
+- [x] Engine `overview` operation: directory parts within a node budget, single-child chains collapsed, "other" and "outside" groups, aggregated links and per-part counts (0.37 s on Kafka)
+- [x] Home screen code map: layered text graph (cycle breaking, longest-path layers over significant links, barycenter ordering, row wrapping, fan-in/fan-out buses, ASCII fallback), zoom into parts and down to files, details panel with every link
+- [x] Route lists (summary, routes view, search results) show the handler method
+- [x] `/show <endpoint>` in the search box; `proj show <project> <endpoint>` opens the route, or prints its flow with `--no-tui` (exit 2 when nothing matches)
+- [ ] Interactive edge selection in the map (links are listed in the details panel instead)
+
 ## Not implemented (by design for the MVP, documented)
 - [ ] `proj remove` (manual steps in the README)
 - [ ] Generics-based resolution (`List<User>` element types)

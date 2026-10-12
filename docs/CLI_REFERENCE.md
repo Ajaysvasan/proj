@@ -134,21 +134,43 @@ were dropped.
 ## proj show
 
 ```
-proj show <name> [--no-tui] [--check]
+proj show <name> [endpoint...] [--no-tui] [--check]
 ```
 
 Opens the interactive explorer. It first verifies that the project is
 registered and that its index exists and is readable; otherwise it explains
 how to fix it (for example `proj add <name> <path> --reanalyze`). Without a
 TTY on stdin and stdout, or with `--no-tui`, it prints a text overview:
-counts, languages, entry points and routes.
+counts, languages, entry points and routes (each with the method that handles
+it).
+
+With an endpoint (`proj show api GET /api/users/42`, `proj show api
+/login.do`), the explorer opens directly on the best-matching route; Esc lists
+every match. With `--no-tui`, the route is printed instead: registration,
+handler, middleware or filters, startup path, the call tree from the handler
+(depth 4), and the other matches. An endpoint that matches nothing exits with
+2.
 
 `--check` runs the index integrity check and exits 0 if the index is
 consistent, 1 otherwise.
 
 ### Screens
 
-- **Home / search**: case-insensitive substring search over symbols (name and
+- **Home / code map**: while the search box is empty, the home screen draws
+  the project's main parts as boxes joined by arrows. A part is a directory
+  group (single-directory chains such as `src/main/java/com/acme` are
+  collapsed; small directories are grouped into `other` when space runs
+  out), and an arrow means calls, route registrations, configuration wiring,
+  mounts or module loads from one part to another. Parts with routes or entry
+  points are drawn at the top and in green, so the picture reads from where
+  requests and startup come in down to the code they reach. Arrow keys select
+  a part; the panel below shows its files, symbols, languages, entry points,
+  routes, and its strongest links in both directions. Enter zooms into the part
+  (or lists its files, which Enter opens); Backspace or Esc zooms out; `a`
+  switches between the strongest link per part, the top 3, and all links (the
+  selected part always shows its strongest links). Cycles are drawn as an
+  upward arrow (▲).
+- **Search**: case-insensitive substring search over symbols (name and
   qualified name), file paths and routes, run 120 ms after typing stops (at most
   15 results per kind on screen). Exact name matches rank first, then names
   starting with the query, then shorter names. Queries of one or two characters
@@ -157,8 +179,11 @@ consistent, 1 otherwise.
   segment, servlet wildcards match any number of segments
   (`/api/users/42/orders` finds `/api/users/*`) and extension mappings match
   by suffix (`/login.do` finds `*.do`). A query that starts with an HTTP method word (`get`, `post`,
-  `delete`, ...) searches routes only. Results show kind, name, `path:line`
-  and the qualified name, so duplicate names are distinguishable.
+  `delete`, ...) searches routes only. `/show <endpoint>` (also typed as
+  `show <endpoint>`) lists API endpoints only; Enter opens the route. Results
+  show kind, name, `path:line` and the qualified name, so duplicate names are
+  distinguishable; routes show the method that handles them
+  (`UserServlet.doGet`).
 - **Symbol**: location, parent, visibility, counts of outgoing and incoming
   relationships by status, handled routes, entry-point role. Tabs:
   *Callees* (forward tree), *Callers* (backward tree), *Exceptions* (explicit
@@ -181,7 +206,11 @@ candidates]`, `[heuristic]`, `[external]`; `xN` means N call sites.
 
 | Key | Action |
 |---|---|
-| `/` | focus the search box (home) |
+| `/` | focus the search box (home); type `/show GET /api/users/42` to open an endpoint |
+| arrows | select a part of the code map (home, empty search) |
+| Enter | zoom into the selected part or list its files (code map) |
+| Backspace, Esc | zoom out (code map) |
+| `a` | links drawn on the code map: strongest per part, top 3, all |
 | typing, Backspace, Ctrl+U | edit / clear the query |
 | Esc | leave the search box; elsewhere go back |
 | Backspace, `b` | go back (when not typing) |
@@ -222,6 +251,8 @@ proj -v add mono ~/src/monorepo --include-default vendor --max-file-size 2m
 proj log
 proj log api --run 12
 proj show api
+proj show api GET /api/users/42
+proj show api POST /api/orders --no-tui
 proj show api --check
 PROJ_HOME=/tmp/proj-scratch proj add demo ./demo --json | jq .counts
 ```

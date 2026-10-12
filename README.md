@@ -98,7 +98,8 @@ changes, run `./scripts/build.sh` again.
 
 ```sh
 proj add my-server ~/projects/server   # register a project and analyze it
-proj show my-server                    # explore it in the terminal UI
+proj show my-server                    # code map + search in the terminal UI
+proj show my-server GET /api/users/42  # jump straight to an API endpoint (--no-tui prints its flow)
 proj refresh my-server                 # after editing files: re-parses only what changed
 proj log                               # analysis history and diagnostics
 proj --help                            # all commands and options
@@ -119,7 +120,11 @@ Analysis complete with problems (partial)
   ...
 ```
 
-In `proj show`, press `/` and type `getUser`, `UserService.find`,
+`proj show` opens on a **code map**: the project's main parts drawn as boxes
+joined by arrows (calls, route registrations, configuration wiring), from
+where requests and startup come in down to the code they reach. Arrow keys
+select a part, Enter zooms in, Backspace zooms out, `a` shows more links.
+Type `/show GET /api/users/42` to open an API endpoint. Press `/` and type `getUser`, `UserService.find`,
 `routes/users` or `GET /api/users/:id` (concrete URLs such as
 `/api/users/42` match parameterized routes). Press Enter to open a result,
 Tab to switch between callees, callers, exceptions and source, and `?` for all
@@ -264,7 +269,7 @@ on macOS has not been measured; CI only checks that peak memory stays under
 ## Platform status
 
 - **Linux (Fedora 43, x86_64, GCC 15.3, Node 22):** built and fully tested
-  (engine: 71 test cases plus 4 leak checks; CLI: 38 tests).
+  (engine: 72 test cases plus 4 leak checks; CLI: 45 tests).
 - **CI (GitHub Actions; `.github/workflows/ci.yml`):** on Ubuntu with GCC,
   Ubuntu with Clang, and macOS with Apple Clang, every push builds the engine
   with warnings as errors and runs the engine tests, the CLI tests, the

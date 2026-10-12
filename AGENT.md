@@ -32,8 +32,8 @@ behavior changes.
 
 ```sh
 cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release && cmake --build build/engine --parallel
-ctest --test-dir build/engine --output-on-failure   # 71 test cases + 4 leak checks
-cd cli && npm ci && npm test                  # 38 tests (unit, client, CLI, UI)
+ctest --test-dir build/engine --output-on-failure   # 72 test cases + 4 leak checks
+cd cli && npm ci && npm test                  # 45 tests (unit, graph, client, CLI, UI)
 node bench/run.mjs --sizes 500,2000 --queries 10 --max-rss-mib 64
 ```
 

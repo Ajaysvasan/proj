@@ -167,6 +167,24 @@ describe('proj refresh', () => {
   });
 });
 
+describe('proj show <project> <endpoint>', () => {
+  it('prints the flow of an API endpoint without a terminal, and rejects an unknown one', () => {
+    const home = tempDir('home');
+    const src = copyFixture('legacy-java', tempDir('src'));
+    assert.equal(runCli(['add', 'legacy', src], { PROJ_HOME: home }).code, 0);
+    const r = runCli(['show', 'legacy', 'POST', '/api/users/42', '--no-tui'], { PROJ_HOME: home });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /POST \/api\/users\/\*  → UserServlet\.doPost/);
+    assert.match(r.stdout, /registered  src\/main\/webapp\/WEB-INF\/web\.xml:\d+ on users/);
+    assert.match(r.stdout, /middleware  .*AuthFilter/);
+    assert.match(r.stdout, /Call flow from the handler/);
+    assert.match(r.stdout, /UserService\.save/);
+    const missing = runCli(['show', 'legacy', '/no/such/endpoint', '--no-tui'], { PROJ_HOME: home });
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /no API endpoint of 'legacy' matches/);
+  });
+});
+
 describe('output to a closed pipe', () => {
   it('keeps the exit code and prints no error when the reader exits early (proj add | head)', async () => {
     const home = tempDir('home');

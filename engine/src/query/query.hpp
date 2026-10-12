@@ -46,6 +46,10 @@ class IndexReader {
   json file_deps(int64_t file_id, const std::string& direction, int64_t limit, int64_t offset);
   json entry_points(int64_t limit);
   json routes(int64_t limit, int64_t offset);
+  // Code map: the main parts of the project (directory groups, at most
+  // `max_nodes`) under `focus` and the calls, registrations and wiring between them.
+  // `direct_files` lists only the files directly in `focus` instead.
+  json overview(const std::string& focus, int max_nodes, bool direct_files = false);
   json route_flow(int64_t route_id, const TraverseOptions& options);
   json exceptions(int64_t symbol_id, int depth, int64_t max_nodes);
   json startup_path(int64_t symbol_id, int max_depth);

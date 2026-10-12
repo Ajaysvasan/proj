@@ -243,8 +243,10 @@ json IndexReader::search(const std::string& query, const std::vector<std::string
     std::string qlower = lower(path_query);
     auto st = db_.prepare(
         "SELECT r.id, r.method, r.path, r.full_path, f.path, r.line, r.handler_status, r.handler_name, "
-        "r.handler_symbol_id, r.framework, r.mount_status, r.confidence FROM routes r JOIN files f ON f.id = r.file_id "
-        "WHERE (?1 = '' OR r.method = ?1 OR r.method = 'ALL') ORDER BY r.full_path, r.method, r.id LIMIT 20000");
+        "r.handler_symbol_id, r.framework, r.mount_status, r.confidence, IFNULL(h.qualified_name, ''), IFNULL(h.kind, '') "
+        "FROM routes r JOIN files f ON f.id = r.file_id LEFT JOIN symbols h ON h.id = r.handler_symbol_id "
+        "WHERE (?1 = '' OR r.method = ?1 OR r.method = 'ALL' OR r.method = 'ANY') ORDER BY r.full_path, r.method, r.id "
+        "LIMIT 20000");
     st.bind(1, method);
     struct Hit {
       int score;
@@ -273,7 +275,9 @@ json IndexReader::search(const std::string& query, const std::vector<std::string
                        {"handler_symbol_id", st.is_null(8) ? json(nullptr) : json(st.int64(8))},
                        {"framework", st.text(9)},
                        {"mount_status", st.text(10)},
-                       {"confidence", st.text(11)}}});
+                       {"confidence", st.text(11)},
+                       {"handler_qualified", st.text(12).empty() ? json(nullptr) : json(st.text(12))},
+                       {"handler_symbol_kind", st.text(13).empty() ? json(nullptr) : json(st.text(13))}}});
     }
     std::stable_sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.score > b.score; });
     for (size_t i = 0; i < hits.size() && static_cast<int64_t>(i) < limit; ++i) routes.push_back(hits[i].row);
@@ -662,7 +666,8 @@ json IndexReader::routes(int64_t limit, int64_t offset) {
   limit = clamp(limit, 1, QueryLimits::kMaxResults);
   auto st = db_.prepare(
       "SELECT r.id, r.method, r.full_path, r.framework, f.path, r.line, r.handler_status, r.handler_name, r.mount_status, "
-      "r.confidence FROM routes r JOIN files f ON f.id = r.file_id ORDER BY r.full_path, r.method, r.id LIMIT ? OFFSET ?");
+      "r.confidence, h.id, h.name, h.qualified_name, h.kind FROM routes r JOIN files f ON f.id = r.file_id "
+      "LEFT JOIN symbols h ON h.id = r.handler_symbol_id ORDER BY r.full_path, r.method, r.id LIMIT ? OFFSET ?");
   st.bind(1, limit + 1).bind(2, std::max<int64_t>(0, offset));
   json rows = json::array();
   bool more = false;
@@ -680,7 +685,10 @@ json IndexReader::routes(int64_t limit, int64_t offset) {
                     {"handler_status", st.text(6)},
                     {"handler_name", st.is_null(7) ? json(nullptr) : json(st.text(7))},
                     {"mount_status", st.text(8)},
-                    {"confidence", st.text(9)}});
+                    {"confidence", st.text(9)},
+                    {"handler", st.is_null(10) ? json(nullptr)
+                                               : json{{"id", st.int64(10)}, {"name", st.text(11)},
+                                                      {"qualified_name", st.text(12)}, {"kind", st.text(13)}}}});
   }
   return {{"routes", rows}, {"has_more", more}, {"offset", offset}, {"limit", limit}};
 }
