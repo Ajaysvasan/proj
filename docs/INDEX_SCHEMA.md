@@ -161,7 +161,10 @@ every candidate of an `ambiguous` edge, ordered by file path and line.
 
 Bookkeeping columns: `raw_kind` (the extracted kind; resolution may turn a
 `calls` into `instantiates`), `generated` (1 for edges the resolver derives:
-`loads_module`, `overridden_by`, `registers_route`, `uses_middleware`) and
+`loads_module`, `overridden_by`, `registers_route`, `uses_middleware`, and
+inferred `calls` whose `raw_kind` is `anonymous_class` (a method that creates
+a Java anonymous class -> its methods) or `thread_start` (`submit(task)`,
+`new Thread(task)`, `start()` -> the task's `run()`/`call()`)) and
 `receiver_edge_id` (for a chained call `a.b().c()`, the edge of `b()` whose
 result is the receiver of `c()`).
 
@@ -192,7 +195,7 @@ associated with B. It does not prove that the call happens at runtime.
 |---|---|
 | `resolved` | target found by scope, import, export or declared-type rules |
 | `ambiguous` | several candidates; all are listed in `edge_candidates` |
-| `heuristic` | receiver type unknown; matched by method name alone (only when exactly one project method has that name) |
+| `heuristic` | inferred: receiver type unknown and matched by method name alone (only when exactly one project method has that name), or an inferred `anonymous_class` / `thread_start` call (the note says which) |
 | `external` | target is in an external package, standard library or language built-in |
 | `unresolved` | not determinable statically; `note` explains why (parameter of unknown type, dynamic receiver, failed import, ...) |
 

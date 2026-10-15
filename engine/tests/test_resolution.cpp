@@ -1,6 +1,7 @@
 // Resolution of chained calls, typed receivers, static imports, inherited
 // external methods and constructor-injected fields.
 #include <map>
+#include <set>
 
 #include "db/sqlite.hpp"
 #include "helpers.hpp"
@@ -203,4 +204,92 @@ TEST_CASE("Java: method references resolve like the calls they stand for", "[res
   CHECK(status_of(*a, start, "this::handle") == "ambiguous");
   CHECK(status_of(*a, start, "String::valueOf") == "external");
   CHECK(status_of(*a, start, "unknown::run") == "unresolved");
+}
+
+TEST_CASE("Java: work started on threads, executors and timers; anonymous classes", "[resolution][java]") {
+  TempDir src;
+  auto d = src.path() / "src/a";
+  write_file(d / "Task.java", "package a;\npublic class Task implements Runnable {\n  public void run() {}\n}\n");
+  write_file(d / "Loader.java",
+             "package a;\nimport java.util.concurrent.Callable;\n"
+             "public class Loader implements Callable<String> {\n  public String call() { return \"\"; }\n}\n");
+  write_file(d / "Tick.java", "package a;\npublic class Tick extends java.util.TimerTask {\n  public void run() {}\n}\n");
+  write_file(d / "Worker.java", "package a;\npublic class Worker extends Thread {\n  public void run() {}\n}\n");
+  write_file(d / "Poller.java", "package a;\npublic class Poller extends Worker {\n}\n");
+  write_file(d / "Service.java", "package a;\npublic class Service {\n  public void start() {}\n}\n");
+  write_file(d / "Util.java", "package a;\npublic class Util {\n  static void work() {}\n}\n");
+  // An external class that shares its simple name with the project's Worker thread.
+  write_file(src.path() / "src/b/Other.java",
+             "package b;\nimport org.other.Worker;\nimport a.Task;\n"
+             "public class Other {\n  void go(Task t) { new Worker(t); }\n}\n");
+  write_file(d / "Jobs.java",
+             "package a;\n\nimport java.util.Timer;\nimport java.util.concurrent.ExecutorService;\n"
+             "import com.sun.net.httpserver.HttpServer;\nimport com.sun.net.httpserver.HttpHandler;\n"
+             "import com.sun.net.httpserver.HttpExchange;\n\n"
+             "public class Jobs {\n"
+             "  private ExecutorService pool;\n"
+             "  private Task cleaner;\n"
+             "  void start(Task task, Timer timer, Service service, HttpServer server) {\n"
+             "    pool.submit(task);\n"
+             "    pool.submit(new Loader());\n"
+             "    pool.execute(this.cleaner);\n"
+             "    timer.schedule(new Tick(), 1000L);\n"
+             "    new Thread(task, \"t\");\n"
+             "    Worker w = new Worker();\n"
+             "    w.start();\n"
+             "    new Poller().start();\n"
+             "    service.start();\n"
+             "    pool.submit(\"not a task\");\n"
+             "    new Thread(new Runnable() {\n"
+             "      public void run() { Util.work(); }\n"
+             "    }).start();\n"
+             "    server.createContext(\"/x\", new HttpHandler() {\n"
+             "      public void handle(HttpExchange ex) {}\n"
+             "    });\n"
+             "    Runtime.getRuntime().addShutdownHook(new Worker());\n"
+             "  }\n"
+             "}\n");
+  auto a = analyze(src.path());
+  db::Database db(a->result["result"]["index_path"].get<std::string>(), db::OpenMode::ReadOnly);
+  // (raw kind, source, target) -> (status, lines)
+  std::map<std::tuple<std::string, std::string, std::string>, std::pair<std::string, std::set<int64_t>>> inferred;
+  auto st = db.prepare(
+      "SELECT e.raw_kind, s.qualified_name, t.qualified_name, e.status, e.line FROM edges e "
+      "JOIN symbols s ON s.id = e.src_symbol_id JOIN symbols t ON t.id = e.dst_symbol_id "
+      "WHERE e.raw_kind IN ('thread_start', 'anonymous_class')");
+  while (st.step()) {
+    auto& v = inferred[{st.text(0), st.text(1), st.text(2)}];
+    v.first = st.text(3);
+    v.second.insert(st.int64(4));
+  }
+  auto lines_of = [&](const std::string& kind, const std::string& target) -> std::set<int64_t> {
+    auto it = inferred.find({kind, "a.Jobs.start", target});
+    return it == inferred.end() ? std::set<int64_t>{} : it->second.second;
+  };
+  // submit(task), execute(this.cleaner) and new Thread(task, "t")
+  CHECK(lines_of("thread_start", "a.Task.run") == std::set<int64_t>{13, 15, 17});
+  CHECK(lines_of("thread_start", "a.Loader.call") == std::set<int64_t>{14});
+  CHECK(lines_of("thread_start", "a.Tick.run") == std::set<int64_t>{16});
+  // w.start(), new Poller().start() (Poller inherits run() from Worker) and addShutdownHook(new Worker())
+  CHECK(lines_of("thread_start", "a.Worker.run") == std::set<int64_t>{19, 20, 29});
+  int task_sites = 0, worker_sites = 0;
+  auto all = db.prepare(
+      "SELECT t.qualified_name, e.status, e.note FROM edges e JOIN symbols t ON t.id = e.dst_symbol_id "
+      "WHERE e.raw_kind = 'thread_start'");
+  while (all.step()) {
+    CHECK(all.text(1) == "heuristic");  // inferred: the library calls run() later
+    task_sites += all.text(0) == "a.Task.run";
+    worker_sites += all.text(0) == "a.Worker.run";
+  }
+  CHECK(task_sites == 3);    // submit(task), execute(this.cleaner), new Thread(task)
+  CHECK(worker_sites == 3);  // w.start(), new Poller().start(), addShutdownHook(new Worker())
+  CHECK(lines_of("thread_start", "a.Service.start").empty());
+  CHECK(inferred.count({"thread_start", "b.Other.go", "a.Task.run"}) == 0);
+  // The anonymous Runnable's run() is reached from the method that creates it;
+  // the anonymous route handler is reached through its route instead.
+  auto anon = inferred.find({"anonymous_class", "a.Jobs.start", "a.Jobs.start.run"});
+  REQUIRE(anon != inferred.end());
+  CHECK(anon->second.first == "heuristic");
+  CHECK(lines_of("anonymous_class", "a.Jobs.start.handle").empty());
+  CHECK(target_of(*a, "a.Jobs.start.run", "Util.work") == "a.Util.work");
 }

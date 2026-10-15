@@ -159,6 +159,8 @@ json resolution_stats(db::Database& db) {
           {"inheritance", {{"resolved", inherit.value("resolved", 0)}, {"unresolved", inherit["total"].get<int64_t>() - inherit.value("resolved", 0)}}},
           {"override_edges", count("SELECT COUNT(*) FROM edges WHERE kind = 'overridden_by'")},
           {"module_load_edges", count("SELECT COUNT(*) FROM edges WHERE kind = 'loads_module'")},
+          {"anonymous_class_edges", count("SELECT COUNT(*) FROM edges WHERE raw_kind = 'anonymous_class'")},
+          {"thread_start_edges", count("SELECT COUNT(*) FROM edges WHERE raw_kind = 'thread_start'")},
           {"routes",
            {{"total", count("SELECT COUNT(*) FROM routes")},
             {"handlers_resolved", count("SELECT COUNT(*) FROM routes WHERE handler_symbol_id IS NOT NULL")},

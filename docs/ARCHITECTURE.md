@@ -53,8 +53,9 @@ itself.
    files.
 5. **Resolve** in bounded passes: file dependencies → Python submodule
    bindings → module-load edges → inheritance → calls (64 files per
-   transaction) → override/dispatch edges → mounts → route handlers → route
-   middleware → route prefixes → `package.json` entry points. Every lookup is
+   transaction) → override/dispatch edges → mounts → route handlers → Java
+   anonymous-class and thread-start edges (inferred) → route middleware →
+   route prefixes → `package.json` entry points. Every lookup is
    an indexed query; caches are capped at 20,000 entries and cleared when
    full.
 6. **Finalize**: FTS5 trigram index rebuild, counts, `index_meta`, `ANALYZE`,
@@ -97,7 +98,7 @@ pid no longer exists and marks the run `interrupted`.
      name, importers (transitively) of a file whose exported interface changed
      or that was added or removed, and files whose import resolution changed
    - **derived rows:** rows with `generated = 1` (module loads, overrides,
-     route registration and middleware edges, Python submodule dependencies,
+     anonymous-class and thread-start calls, route registration and middleware edges, Python submodule dependencies,
      per-prefix route copies) are deleted. Columns the resolver overwrote are
      restored from their `raw_*` copies. Route mounts, prefixes, handlers and
      middleware are always re-resolved, which is cheap.

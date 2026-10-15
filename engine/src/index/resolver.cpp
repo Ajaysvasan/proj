@@ -124,6 +124,8 @@ json ResolveStats::to_json() const {
           {"inheritance", {{"resolved", inherits_resolved}, {"unresolved", inherits_unresolved}}},
           {"override_edges", override_edges},
           {"module_load_edges", module_load_edges},
+          {"anonymous_class_edges", anonymous_class_edges},
+          {"thread_start_edges", thread_start_edges},
           {"routes",
            {{"total", routes},
             {"handlers_resolved", route_handlers_resolved},
@@ -201,6 +203,8 @@ ResolveStats Resolver::run_relationships() {
   phase(db_, "overrides", [&] { add_override_edges(); });
   phase(db_, "mounts", [&] { resolve_mounts(); });
   phase(db_, "route handlers", [&] { resolve_route_handlers(); });
+  phase(db_, "anonymous classes", [&] { add_anonymous_class_edges(); });
+  phase(db_, "thread starts", [&] { add_thread_start_edges(); });
   phase(db_, "route middleware", [&] { resolve_route_middleware(); });
   phase(db_, "route prefixes", [&] { compute_route_prefixes(); });
   phase(db_, "manifests", [&] { add_manifest_entry_points(); });
@@ -2130,6 +2134,154 @@ void Resolver::add_override_edges() {
         if (def.status == "resolved" && !def.targets.empty()) from = def.targets[0];
         ins.bind(1, from).bind(2, o.targets[0]).run();
         ++stats_.override_edges;
+      }
+    }
+  }
+}
+
+// Methods of a Java anonymous class (new Runnable() { public void run() {...} })
+// are symbols nested in the method that creates the object. Nothing calls them
+// by name: whoever receives the object calls them through its interface. An
+// inferred edge from the creating method makes them reachable, as the calls in
+// a lambda body are. Anonymous route handlers are reached through their route.
+void Resolver::add_anonymous_class_edges() {
+  db_.exec(
+      "INSERT INTO edges(kind, raw_kind, generated, src_symbol_id, dst_symbol_id, file_id, line, col, status, "
+      "target_name, target_text, note) "
+      "SELECT 'calls', 'anonymous_class', 1, p.id, s.id, s.file_id, s.start_line, s.start_col, 'heuristic', s.name, "
+      "'anonymous class: ' || s.name || '()', 'defined in an anonymous class created here; runs when that object is used' "
+      "FROM symbols s JOIN symbols p ON p.id = s.parent_id "
+      "WHERE s.kind = 'method' AND s.language = 'java' AND p.kind IN ('method', 'constructor', 'route_handler') "
+      "AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.handler_symbol_id = s.id)");
+  stats_.anonymous_class_edges += db_.changes();
+}
+
+// Work handed to another thread: pool.submit(task), execute, schedule*,
+// runAsync/supplyAsync, invokeLater, timer.schedule(task, ...),
+// addShutdownHook(hook), new Thread(task) and start() on a Thread subclass.
+// The library calls the task's run() (or call()/get()) later, so these are
+// inferred edges from the starting method to that method of the project class
+// named by the argument's or receiver's declared type. Lambdas and method references are calls already, anonymous
+// classes are linked above, and other types stay unlinked.
+void Resolver::add_thread_start_edges() {
+  // Project classes that are threads: they extend java.lang.Thread directly or through project classes.
+  std::unordered_set<int64_t> threads;
+  std::vector<int64_t> frontier;
+  auto roots = db_.prepare(
+      "SELECT e.src_symbol_id FROM edges e JOIN files f ON f.id = e.file_id WHERE e.kind = 'extends' "
+      "AND e.status = 'external' AND e.target_name = 'Thread' AND f.language = 'java'");
+  while (roots.step()) {
+    if (threads.insert(roots.int64(0)).second) frontier.push_back(roots.int64(0));
+  }
+  auto subs = db_.prepare("SELECT src_symbol_id FROM edges WHERE dst_symbol_id = ? AND kind = 'extends' AND status = 'resolved'");
+  while (!frontier.empty()) {
+    int64_t cls = frontier.back();
+    frontier.pop_back();
+    subs.bind(1, cls);
+    while (subs.step()) {
+      if (threads.insert(subs.int64(0)).second) frontier.push_back(subs.int64(0));
+    }
+    subs.reset();
+  }
+  std::string thread_names = "'Thread'";
+  std::set<std::string> seen_names;
+  for (int64_t cls : threads) {
+    auto s = symbol(cls);
+    if (s && seen_names.insert(s->name).second) thread_names += ", '" + s->name + "'";  // identifiers: no quotes inside
+  }
+
+  struct Site {
+    int64_t src, file, line, col, dst;
+    std::string kind, name, receiver, rk, args, status;
+  };
+  std::vector<Site> sites;
+  auto sel = db_.prepare(
+      "SELECT e.src_symbol_id, e.file_id, e.line, e.col, IFNULL(e.dst_symbol_id, -1), e.kind, e.target_name, "
+      "IFNULL(e.receiver, ''), IFNULL(e.receiver_kind, ''), IFNULL(e.arg_types, ''), e.status "
+      "FROM edges e JOIN files f ON f.id = e.file_id WHERE f.language = 'java' AND e.generated = 0 AND ("
+      "(e.kind = 'calls' AND e.target_name IN ('execute', 'submit', 'schedule', 'scheduleAtFixedRate', "
+      "'scheduleWithFixedDelay', 'runAsync', 'supplyAsync', 'invokeLater', 'invokeAndWait', 'addShutdownHook', "
+      "'start')) OR "
+      "(e.kind = 'instantiates' AND e.target_name IN (" + thread_names + ") AND e.arg_types != '')) "
+      "ORDER BY e.file_id, e.id");
+  while (sel.step()) {
+    sites.push_back({sel.int64(0), sel.int64(1), sel.int64(2), sel.int64(3), sel.int64(4), sel.text(5), sel.text(6),
+                     sel.text(7), sel.text(8), sel.text(9), sel.text(10)});
+  }
+  sel.reset();
+
+  auto ins = db_.prepare(
+      "INSERT INTO edges(kind, raw_kind, generated, src_symbol_id, dst_symbol_id, file_id, line, col, status, "
+      "target_name, target_text, note) VALUES ('calls', 'thread_start', 1, ?, ?, ?, ?, ?, 'heuristic', ?, ?, ?)");
+  // The project class named by an argument token ("$var", "$this", "$this.field", "Type") or receiver.
+  auto class_of = [&](int64_t scope, const std::string& token) -> int64_t {
+    if (token.empty() || token == "?") return -1;
+    if (token == "$this") return enclosing_class(scope);
+    std::optional<std::string> type;
+    if (starts_with(token, "$this.")) {
+      q_hint_.bind(1, enclosing_class(scope)).bind(2, token.substr(6));
+      if (q_hint_.step()) type = q_hint_.text(0);
+      q_hint_.reset();
+    } else if (token[0] == '$') {
+      type = hint_in_scope_chain(scope, token.substr(1));
+    } else {
+      type = token;
+    }
+    if (!type || type->empty() || *type == "?") return -1;
+    std::string ext;
+    int64_t cls = starts_with(*type, "@call:") ? resolve_type(file_id_, scope, *type, &ext) : java_type(file_id_, *type, &ext);
+    auto s = cls >= 0 ? symbol(cls) : std::nullopt;
+    return s && is_class_kind(s->kind) ? cls : -1;
+  };
+  int64_t file = -1;
+  std::set<std::pair<int64_t, int64_t>> linked;  // (site edge position, target) already linked
+  for (const auto& s : sites) {
+    if (s.file != file) {
+      file = s.file;
+      set_file_context(file);
+      linked.clear();
+    }
+    std::vector<std::pair<int64_t, std::string>> tasks;  // (class, how it starts)
+    if (s.kind == "calls" && s.name == "start") {
+      // A start() the project does not define: Thread.start(), which runs run() on the new thread.
+      if (s.status == "resolved" || s.status == "ambiguous" || s.status == "heuristic") continue;
+      int64_t cls = -1;
+      if (s.rk == "none" || s.rk == "this" || s.rk == "super") cls = enclosing_class(s.src);
+      else if (s.rk == "identifier") cls = class_of(s.src, "$" + s.receiver);
+      else if (s.rk == "this_member") cls = class_of(s.src, "$this." + s.receiver);
+      else if (s.rk == "typed") cls = class_of(s.src, s.receiver);
+      if (cls >= 0 && threads.count(cls)) tasks.emplace_back(cls, "start() runs it on a new thread");
+    } else {
+      if (s.kind == "instantiates" && s.status == "external" && s.name != "Thread") continue;
+      if (s.kind == "instantiates" && s.status != "external") {
+        // A project Thread subclass: only when the constructor belongs to one.
+        auto d = symbol(s.dst);
+        if (!d || !(threads.count(d->id) || (d->kind == "constructor" && threads.count(d->parent_id)))) continue;
+      }
+      std::string how = s.kind == "instantiates" ? "a thread created with it runs it when started"
+                                                 : s.name + "() runs it on another thread or later";
+      size_t start = 0;
+      while (start <= s.args.size()) {
+        size_t comma = s.args.find(',', start);
+        std::string token = s.args.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (int64_t cls = class_of(s.src, token); cls >= 0) tasks.emplace_back(cls, how);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+      }
+    }
+    for (const auto& [cls, how] : tasks) {
+      std::vector<std::string> names = {"run", "call"};
+      if (s.name == "supplyAsync") names = {"get"};
+      for (const auto& m : names) {
+        Outcome o = method_lookup(cls, m, 0);
+        if (o.status != "resolved" || o.targets.empty()) continue;
+        if (!linked.insert({s.line * 100000 + s.col, o.targets[0]}).second) break;
+        auto c = symbol(cls);
+        ins.bind(1, s.src).bind(2, o.targets[0]).bind(3, s.file).bind(4, s.line).bind(5, s.col).bind(6, m);
+        ins.bind(7, s.name + "(...) -> " + (c ? c->name : std::string("?")) + "." + m + "()");
+        ins.bind(8, (c ? c->name : std::string("the task")) + " is started here: " + how).run();
+        ++stats_.thread_start_edges;
+        break;
       }
     }
   }

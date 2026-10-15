@@ -21,6 +21,7 @@ struct ResolveStats {
           calls_external = 0;
   int64_t inherits_resolved = 0, inherits_unresolved = 0;
   int64_t override_edges = 0, module_load_edges = 0;
+  int64_t anonymous_class_edges = 0, thread_start_edges = 0;  // inferred (heuristic) calls
   int64_t routes = 0, route_handlers_resolved = 0, route_handlers_unresolved = 0;
   int64_t mounts_router = 0, mounts_middleware = 0, mounts_unresolved = 0;
   int64_t manifest_entry_points = 0;
@@ -120,6 +121,8 @@ class Resolver {
   void resolve_inheritance();
   void resolve_calls();
   void add_override_edges();
+  void add_anonymous_class_edges();
+  void add_thread_start_edges();
   void resolve_mounts();
   void resolve_route_handlers();
   void resolve_route_middleware();

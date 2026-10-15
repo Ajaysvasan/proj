@@ -77,7 +77,7 @@ Options: `-DPROJ_BUILD_TESTS=OFF` skips Catch2 and the test binary;
 ## Test
 
 ```sh
-# Engine: 75 Catch2 test cases (paths, ignore rules, scanner, extractors for all
+# Engine: 76 Catch2 test cases (paths, ignore rules, scanner, extractors for all
 # languages, schema/migrations, registry, end-to-end indexing of every fixture,
 # queries, traversal limits, failure handling, protocol errors, call
 # resolution, refresh equivalence, legacy routing and overloads, code map)

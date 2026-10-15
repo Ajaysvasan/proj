@@ -248,6 +248,15 @@ Method references (`this::drain`, `Util::print`, `worker::work`,
 `Repo::new`) are calls from the enclosing method, as the calls inside a
 lambda body are, and resolve the same way. Their argument count is not
 visible, so an overloaded name stays `ambiguous` among its overloads.
+Methods of an anonymous class (`new Runnable() { public void run() {...} }`)
+are reached from the method that creates the object by a `heuristic` edge:
+they run when that object is used. Work handed to another thread is linked
+the same way: `pool.submit(task)`, `execute`, `schedule`,
+`scheduleAtFixedRate`, `scheduleWithFixedDelay`, `CompletableFuture.runAsync`
+/ `supplyAsync`, `invokeLater`, `timer.schedule(task, ...)`,
+`Runtime.addShutdownHook(hook)` and `new Thread(task)` link to the `run()` or `call()` (`get()` for `supplyAsync`) of
+the project class named by the argument's declared type, and `start()` on a
+subclass of `Thread` links to its `run()`.
 Chained calls (`repo.find(1).name()`) resolve through declared return types,
 and so do `var u = repo.find(3)` locals. `new X().m()` and `((X) o).m()` use
 `X`. Untyped lambda parameters shadow outer names and stay unresolved.
@@ -298,8 +307,10 @@ injected field), generics-based resolution (`List<User>` is treated as
 `List`, so `users.get(0).name()` is not followed), calls through a stored
 lambda or method reference (it is linked from the method where it is
 written; `handler.apply(x)` resolves to the external functional interface),
-threads, executors and timers (`run()` of a `Runnable` started elsewhere has
-no caller), reflection,
+tasks whose declared type is an interface or JDK type (`Runnable r = new
+Task(); pool.submit(r)` is not linked to `Task.run()`), anonymous classes in
+field initializers and static blocks (their methods look like members of the
+enclosing class), reflection,
 annotation processors, Lombok-generated members, `@WebFilter`, and servlet
 context paths (routes are shown relative to the web application).
 
