@@ -631,6 +631,7 @@ void Service::agent_hello(Conn& c, const json& hello) {
   json context = {{"index_identity", m.record.last_success_at.value_or("")},
                   {"source_revision", platform::git_revision(m.record.root_path)}};
   c.session = store(m).open_session(hello, context);
+  commit(m);  // durable before status reports it, so a crashed service's successor can mark it interrupted
   m.agents.insert(c.fd);
   bool complete = mode != "attach" && hello.value("since_start", false);
   set_state(m, "ATTACHED", "pid " + std::to_string(c.pid) + ": " +

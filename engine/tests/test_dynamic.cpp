@@ -71,9 +71,9 @@ TEST_CASE("runtime store: sessions, idempotent traces, aggregated edges, dedupli
   // The same exception, fate and frames in two traces: one record, counted twice.
   json frames = {{"a.Repo", "load", "Repo.java", 7, 1}, {"a.Svc", "work", "Svc.java", 6, 1}};
   json site = {{"method", 3}, {"line", 7}};
-  CHECK(s.trace(session, trace_msg(10, {{1, -1, 1, 0, 0}}, "complete", {error_msg("java.io.IOException", "CAUGHT", frames, site)})));
-  CHECK(s.trace(session, trace_msg(11, {{1, -1, 1, 0, 0}}, "complete", {error_msg("java.io.IOException", "CAUGHT", frames, site)})));
-  CHECK(s.trace(session, trace_msg(12, {{1, -1, 1, 0, 0}}, "complete", {error_msg("java.io.IOException", "ESCAPED", frames, site)})));
+  CHECK(s.trace(session, trace_msg(10, {{1, -1, 1, 0, 0}}, "complete", json::array({error_msg("java.io.IOException", "CAUGHT", frames, site)}))));
+  CHECK(s.trace(session, trace_msg(11, {{1, -1, 1, 0, 0}}, "complete", json::array({error_msg("java.io.IOException", "CAUGHT", frames, site)}))));
+  CHECK(s.trace(session, trace_msg(12, {{1, -1, 1, 0, 0}}, "complete", json::array({error_msg("java.io.IOException", "ESCAPED", frames, site)}))));
   CHECK(count(s, "SELECT COUNT(*) FROM rt_errors") == 2);
   CHECK(count(s, "SELECT occurrences FROM rt_errors WHERE state = 'CAUGHT'") == 2);
   CHECK(count(s, "SELECT COUNT(*) FROM rt_error_traces l JOIN rt_errors e ON e.id = l.error_id WHERE e.state = 'CAUGHT'") == 2);
@@ -105,7 +105,7 @@ TEST_CASE("runtime store: an uncaught exception takes over the escaped record; r
   json frames = {{"a.Crash", "explode", "Crash.java", 8, 1}, {"a.Crash", "run", "Crash.java", 5, 1}};
   json escaped = error_msg("java.lang.IllegalStateException", "ESCAPED", frames, {{"method", 2}, {"line", 8}});
   escaped["events"] = {{"thrown", 2, 8}, {"exit", 2}, {"exit", 1}};
-  CHECK(s.trace(session, trace_msg(1, {{1, -1, 1, 0, 1}, {2, 0, 1, 2, 1}}, "complete", {escaped})));
+  CHECK(s.trace(session, trace_msg(1, {{1, -1, 1, 0, 1}, {2, 0, 1, 2, 1}}, "complete", json::array({escaped}))));
   s.uncaught(session, {{"type", "uncaught"}, {"trace", 1}, {"thread", {{"id", 9}, {"name", "crasher"}}},
                        {"error", error_msg("java.lang.IllegalStateException", "UNCAUGHT", frames)}});
   CHECK(count(s, "SELECT COUNT(*) FROM rt_errors WHERE state = 'ESCAPED'") == 0);
@@ -120,7 +120,7 @@ TEST_CASE("runtime store: an uncaught exception takes over the escaped record; r
   CHECK(count(s, "SELECT COUNT(*) FROM rt_errors WHERE state = 'UNCAUGHT'") == 2);
   for (int64_t id = 2; id <= 6; ++id) {
     json e = error_msg("E" + std::to_string(id), "CAUGHT", json::array());
-    CHECK(s.trace(session, trace_msg(id, {{1, -1, 1, 0, 0}}, "complete", {e})));
+    CHECK(s.trace(session, trace_msg(id, {{1, -1, 1, 0, 0}}, "complete", json::array({e}))));
   }
   s.commit();
   s.retain();
@@ -218,7 +218,7 @@ TEST_CASE("runtime methods are placed in the static index, with evidence for eac
     CHECK(s.trace(session, trace_msg(1, {{1, -1, 1, 0, 0}, {2, 0, 1, 1, 0}, {3, 1, 1, 2, 0}, {4, 2, 1, 3, 0}, {5, 2, 1, 4, 0},
                                          {6, 2, 1, 5, 0}})));
     CHECK(s.trace(session, trace_msg(2, {{7, -1, 1, 0, 0}, {8, 0, 1, 1, 0}, {9, 1, 1, 2, 0}, {10, 0, 1, 3, 0}, {11, 0, 1, 4, 0}},
-                                     "complete", {error_msg("java.sql.SQLException", "WRAPPED", frames, {{"method", 12}, {"line", 8}})})));
+                                     "complete", json::array({error_msg("java.sql.SQLException", "WRAPPED", frames, {{"method", 12}, {"line", 8}})}))));
     s.commit();
   }
 

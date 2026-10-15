@@ -160,7 +160,7 @@ TEST_CASE("runtime ingest and runtime queries release their memory", "[leak]") {
                   {"throw", {{"method", 2}, {"line", 11}}}, {"frames", {{"com.example.shop.Config", "load", "Config.java", 11, 1}}},
                   {"events", {{"thrown", 2, 11}, {"caught", 1, 10}}}};
       s.trace(session, {{"id", next}, {"status", "complete"}, {"thread", {{"id", 1}, {"name", "t"}}}, {"start_ms", next},
-                        {"duration_us", 5}, {"nodes", {{1, -1, 1, 0, 0}, {2, 0, 2, 1, 0}}}, {"errors", {err}}});
+                        {"duration_us", 5}, {"nodes", {{1, -1, 1, 0, 0}, {2, 0, 2, 1, 0}}}, {"errors", json::array({err})}});
     }
     s.commit();
     s.retain();
