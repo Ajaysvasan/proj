@@ -390,6 +390,68 @@ public class UserController extends BaseController implements Api {
   CHECK(main_entry);
 }
 
+TEST_CASE("Java method references are calls from the enclosing method", "[extract][java]") {
+  auto r = parse(Language::Java, R"(
+package a;
+import static spark.Spark.get;
+public class Jobs extends Base {
+    private Repo repo;
+    void start(Executor pool, Worker w) {
+        pool.execute(this::drain);
+        list.forEach(Util::print);
+        pool.submit(w::work);
+        pool.submit(this.repo::flush);
+        pool.submit(super::stop);
+        pool.submit(factory()::build);
+        Supplier<Repo> s = Repo::new;
+        IntFunction<int[]> arrays = int[]::new;
+        get("/jobs", Handlers::list);
+    }
+}
+)", "src/a/Jobs.java");
+  REQUIRE(r.status == "parsed");
+  const auto& f = r.facts;
+  auto by_text = [&](const std::string& t) -> const CallFact* {
+    for (const auto& c : f.calls) {
+      if (c.text == t) return &c;
+    }
+    return nullptr;
+  };
+  auto* start = find_symbol(f, "a.Jobs.start");
+  REQUIRE(start);
+  auto* drain = by_text("this::drain");
+  REQUIRE(drain);
+  CHECK(drain->kind == "calls");
+  CHECK(drain->name == "drain");
+  CHECK(drain->receiver_kind == "this");
+  CHECK(drain->arg_count == -1);  // not visible: overloads stay ambiguous
+  CHECK(f.symbols[static_cast<size_t>(drain->caller)].qualified_name == "a.Jobs.start");
+  REQUIRE(by_text("Util::print"));
+  CHECK(by_text("Util::print")->receiver_kind == "identifier");
+  CHECK(by_text("Util::print")->receiver == "Util");
+  REQUIRE(by_text("w::work"));
+  CHECK(by_text("w::work")->receiver == "w");
+  REQUIRE(by_text("this.repo::flush"));
+  CHECK(by_text("this.repo::flush")->receiver_kind == "this_member");
+  CHECK(by_text("this.repo::flush")->receiver == "repo");
+  REQUIRE(by_text("super::stop"));
+  CHECK(by_text("super::stop")->receiver_kind == "super");
+  // factory()::build: the receiver is the value returned by factory().
+  auto* build = by_text("factory()::build");
+  REQUIRE(build);
+  CHECK(build->receiver_kind == "call");
+  REQUIRE(build->receiver_call >= 0);
+  CHECK(f.calls[static_cast<size_t>(build->receiver_call)].name == "factory");
+  auto* ctor = by_text("Repo::new");
+  REQUIRE(ctor);
+  CHECK(ctor->kind == "instantiates");
+  CHECK(ctor->name == "Repo");
+  CHECK_FALSE(by_text("int[]::new"));
+  // A route handler reference is recorded with its route, not as a call.
+  REQUIRE(f.routes.size() == 1);
+  CHECK_FALSE(by_text("Handlers::list"));
+}
+
 TEST_CASE("C++ namespaces, out-of-line methods, includes and catch handlers", "[extract][cpp]") {
   auto r = parse(Language::Cpp, R"(
 #include "store/user_store.h"

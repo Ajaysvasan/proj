@@ -63,6 +63,9 @@ class Statement {
   std::optional<int64_t> opt_int64(int col) const;
   std::optional<std::string> opt_text(int col) const;
 
+  // Rows stepped through in full table scans since the statement was prepared.
+  int64_t full_scan_steps() const;
+
  private:
   sqlite3* db_ = nullptr;
   sqlite3_stmt* stmt_ = nullptr;

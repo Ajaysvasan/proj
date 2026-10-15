@@ -82,7 +82,10 @@ pid no longer exists and marks the run `interrupted`.
    temporary `refresh_*` tables. The file is then parsed and its facts written
    again. Symbols keep their previous id when their key (kind, qualified name,
    parameter count, ordinal among equal keys) is unchanged. Files the scan no
-   longer finds are deleted with their facts.
+   longer finds are deleted with their facts. These per-file statements run
+   once per changed file, so each must use an index: a full table scan there
+   makes a refresh with many changed files quadratic (`file_scan_steps` in
+   `stats.refresh` counts the rows they scanned).
 5. **Compute the affected set** (`IncrementalUpdate::prepare`):
    - **changed names:** definitions that were added, removed, or whose
      signature, return type or base classes changed. Closed over subclasses and
@@ -106,7 +109,8 @@ pid no longer exists and marks the run `interrupted`.
    `quick_check`, `VACUUM` only when more than a quarter of the pages are free,
    atomic rename). The run is recorded with `stats.mode = "refresh"` and a
    `stats.refresh` breakdown (changed/added/removed/unchanged files, reused
-   symbol ids, changed names, affected files, reset relationships, timings).
+   symbol ids, changed names, affected files, reset relationships, timings,
+   `file_scan_steps`).
 
 Correctness criterion: a refresh must produce the same index as a fresh full
 analysis of the same files, apart from row ids. `engine/tests/test_refresh.cpp`

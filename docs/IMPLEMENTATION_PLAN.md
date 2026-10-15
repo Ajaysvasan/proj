@@ -87,6 +87,13 @@ plus shared registry in the user data directory. Details:
 - [x] `/show <endpoint>` in the search box; `proj show <project> <endpoint>` opens the route, or prints its flow with `--no-tui` (exit 2 when nothing matches)
 - [ ] Interactive edge selection in the map (links are listed in the details panel instead)
 
+## Phase 11: Measured static-analysis gaps
+Found by measuring Kafka (non-test Java methods without any caller in the graph, refresh phase timings).
+- [x] Java method references (`this::m`, `Type::m`, `obj::m`, `Type::new`) are calls from the enclosing method. Kafka: 2,636 more resolved call edges; non-test methods without callers 6,439 → 6,038
+- [x] Refresh: the per-file delete and snapshot statements scanned `type_hints` and the `symbols_name` index once per changed file. Kafka refresh after every Java file changed: 233 s → 39 s (a full analysis takes 32 s); `file_scan_steps` in the refresh stats, with a regression test
+- [ ] Background execution: `run()` of `Runnable`/`Thread`/`TimerTask` classes started through `Thread.start`, executors and timers (69 such methods without callers in Kafka's non-test code)
+- [ ] Narrow overloaded method references by the functional interface they are passed as
+
 ## Not implemented (by design for the MVP, documented)
 - [ ] `proj remove` (manual steps in the README)
 - [ ] Generics-based resolution (`List<User>` element types)

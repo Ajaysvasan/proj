@@ -96,6 +96,10 @@ void Statement::reset() {
   sqlite3_clear_bindings(stmt_);
 }
 
+int64_t Statement::full_scan_steps() const {
+  return stmt_ ? sqlite3_stmt_status(stmt_, SQLITE_STMTSTATUS_FULLSCAN_STEP, 0) : 0;
+}
+
 bool Statement::is_null(int col) const { return sqlite3_column_type(stmt_, col) == SQLITE_NULL; }
 
 int64_t Statement::int64(int col) const { return sqlite3_column_int64(stmt_, col); }

@@ -244,6 +244,10 @@ before a wildcard import); `this.`/`super.`; `obj.m()` through declared
 types of locals, parameters (including `catch`, enhanced-`for`, typed lambda
 and try-with-resources variables, and `instanceof` pattern variables) and
 fields; static calls `Type.m()`; `new X()` to the matching constructor.
+Method references (`this::drain`, `Util::print`, `worker::work`,
+`Repo::new`) are calls from the enclosing method, as the calls inside a
+lambda body are, and resolve the same way. Their argument count is not
+visible, so an overloaded name stays `ambiguous` among its overloads.
 Chained calls (`repo.find(1).name()`) resolve through declared return types,
 and so do `var u = repo.find(3)` locals. `new X().m()` and `((X) o).m()` use
 `X`. Untyped lambda parameters shadow outer names and stay unresolved.
@@ -291,8 +295,11 @@ name or a `catch (Exception|Throwable)`.
 (startup → controller connections are not traced through the container;
 Spring XML `<property ref>` wiring is recorded but not used to type the
 injected field), generics-based resolution (`List<User>` is treated as
-`List`, so `users.get(0).name()` is not followed), lambdas and method
-references as call targets outside route registration, reflection,
+`List`, so `users.get(0).name()` is not followed), calls through a stored
+lambda or method reference (it is linked from the method where it is
+written; `handler.apply(x)` resolves to the external functional interface),
+threads, executors and timers (`run()` of a `Runnable` started elsewhere has
+no caller), reflection,
 annotation processors, Lombok-generated members, `@WebFilter`, and servlet
 context paths (routes are shown relative to the web application).
 

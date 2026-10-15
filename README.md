@@ -269,7 +269,7 @@ on macOS has not been measured; CI only checks that peak memory stays under
 ## Platform status
 
 - **Linux (Fedora 43, x86_64, GCC 15.3, Node 22):** built and fully tested
-  (engine: 72 test cases plus 4 leak checks; CLI: 45 tests).
+  (engine: 75 test cases plus 4 leak checks; CLI: 45 tests).
 - **CI (GitHub Actions; `.github/workflows/ci.yml`):** on Ubuntu with GCC,
   Ubuntu with Clang, and macOS with Apple Clang, every push builds the engine
   with warnings as errors and runs the engine tests, the CLI tests, the

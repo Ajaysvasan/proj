@@ -206,6 +206,38 @@ TEST_CASE("refresh: java interfaces, overloads and same-package classes", "[refr
   sc.check_equivalent();
 }
 
+TEST_CASE("refresh: per-file work does not scan whole tables", "[refresh][java]") {
+  // Each changed file runs the same delete and snapshot statements. A full
+  // scan there (type_hints has no file_id index) made refreshing Kafka after
+  // every Java file changed take 233 s instead of 39 s.
+  Scenario sc("java-spring");
+  auto gen = sc.src / "src/main/java/gen";
+  auto source = [](int i, const std::string& body) {
+    std::string s = "package gen;\n\npublic class C" + std::to_string(i) + " {\n  private StringBuilder buf;\n";
+    for (int m = 0; m < 4; ++m) {
+      s += "  void m" + std::to_string(m) + "(String a, Integer b) {\n    String x = a;\n    Integer y = b;\n    " + body +
+           "\n  }\n";
+    }
+    return s + "}\n";
+  };
+  const int files = 40;
+  for (int i = 0; i < files; ++i) write_file(gen / ("C" + std::to_string(i) + ".java"), source(i, "long z = 0L;"));
+  sc.refresh();
+  for (int i = 0; i < files; ++i) write_file(gen / ("C" + std::to_string(i) + ".java"), source(i, "long z = 1L;"));
+  auto r = sc.refresh();
+  const auto& rs = r["result"]["stats"]["refresh"];
+  CHECK(rs["changed_files"] == files);
+  int64_t hints = 0;
+  {
+    db::Database db(sc.index(), db::OpenMode::ReadOnly);
+    hints = db.query_int("SELECT COUNT(*) FROM type_hints").value_or(0);
+  }
+  REQUIRE(hints > 20 * files);
+  // Scanning type_hints once per changed file alone would be files * hints steps.
+  CHECK(rs["file_scan_steps"].get<int64_t>() < hints);
+  sc.check_equivalent();
+}
+
 TEST_CASE("refresh: C++ header and out-of-line definitions", "[refresh][cpp]") {
   Scenario sc("cpp-app");
   replace_in(sc.src / "include/store/user_store.h", "  void add(const User& user);", "  void add(const User& user);\n  void clear();");

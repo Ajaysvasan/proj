@@ -117,7 +117,7 @@ int extractor_version(Language lang) {
     case Language::TypeScript:
     case Language::Tsx: return 3;
     case Language::Python: return 4;
-    case Language::Java: return 4;
+    case Language::Java: return 5;
     case Language::C:
     case Language::Cpp: return 4;
     case Language::Xml:

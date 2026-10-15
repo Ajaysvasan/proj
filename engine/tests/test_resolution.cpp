@@ -169,3 +169,38 @@ TEST_CASE("C++: chained calls through declared return types", "[resolution][cpp]
   CHECK(target_of(*a, "main", "a.get") == "A::get");
   CHECK(target_of(*a, "main", "a.get().size") == "B::size");
 }
+
+TEST_CASE("Java: method references resolve like the calls they stand for", "[resolution][java]") {
+  TempDir src;
+  auto d = src.path() / "src/a";
+  write_file(d / "Util.java", "package a;\npublic class Util {\n  public static void print(Object o) {}\n}\n");
+  write_file(d / "Worker.java", "package a;\npublic class Worker {\n  public void work() {}\n}\n");
+  write_file(d / "Repo.java", "package a;\npublic class Repo {\n  public Repo() {}\n}\n");
+  write_file(d / "Jobs.java",
+             "package a;\n\nimport java.util.List;\nimport java.util.concurrent.Executor;\n\n"
+             "public class Jobs {\n"
+             "  void start(Executor pool, Worker w, List<Object> items) {\n"
+             "    pool.execute(this::drain);\n"
+             "    items.forEach(Util::print);\n"
+             "    pool.execute(w::work);\n"
+             "    items.forEach(this::handle);\n"
+             "    items.stream().map(String::valueOf);\n"
+             "    pool.execute(unknown::run);\n"
+             "    java.util.function.Supplier<Repo> s = Repo::new;\n"
+             "  }\n"
+             "  void drain() {}\n"
+             "  void handle(Object o) {}\n"
+             "  void handle(Object o, int n) {}\n"
+             "}\n");
+  auto a = analyze(src.path());
+  const std::string start = "a.Jobs.start";
+  CHECK(target_of(*a, start, "this::drain") == "a.Jobs.drain");
+  CHECK(status_of(*a, start, "this::drain") == "resolved");
+  CHECK(target_of(*a, start, "Util::print") == "a.Util.print");
+  CHECK(target_of(*a, start, "w::work") == "a.Worker.work");
+  CHECK(target_of(*a, start, "Repo::new") == "a.Repo.Repo");
+  // The argument count is not visible: both overloads remain candidates.
+  CHECK(status_of(*a, start, "this::handle") == "ambiguous");
+  CHECK(status_of(*a, start, "String::valueOf") == "external");
+  CHECK(status_of(*a, start, "unknown::run") == "unresolved");
+}

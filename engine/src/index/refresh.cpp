@@ -82,6 +82,7 @@ void IncrementalUpdate::snapshot_interface(int64_t file_id, const char* which) {
   auto run = [&](const std::string& sql) {
     auto st = db_.prepare(sql);
     st.bind(1, file_id).run();
+    file_scan_steps_ += st.full_scan_steps();
   };
   // Symbol signatures (including declared return types): a difference means
   // references to that name may now resolve differently anywhere.
@@ -101,7 +102,7 @@ void IncrementalUpdate::snapshot_interface(int64_t file_id, const char* which) {
       "IFNULL(x.local_name, '') || '|' || x.kind || '|' || IFNULL(d.specifier, '') FROM exports x "
       "LEFT JOIN file_deps d ON d.id = x.dep_id WHERE x.file_id = ?1");
   run("INSERT INTO refresh_" + t + "_iface(file_id, item) SELECT h.file_id, 'hint|' || h.name || '|' || h.type_name "
-      "FROM type_hints h JOIN symbols s ON s.id = h.scope_symbol_id WHERE h.file_id = ?1 AND s.kind = 'module'");
+      "FROM type_hints h JOIN symbols s ON s.id = h.scope_symbol_id WHERE s.file_id = ?1 AND s.kind = 'module'");
   run("INSERT INTO refresh_" + t + "_iface(file_id, item) SELECT b.file_id, 'bind|' || b.local_name || '|' || "
       "b.raw_imported || '|' || b.raw_kind || '|' || d.specifier FROM bindings b JOIN file_deps d ON d.id = b.raw_dep_id "
       "JOIN files f ON f.id = b.file_id WHERE b.file_id = ?1 AND f.language IN ('javascript','typescript','tsx','python')");
@@ -114,6 +115,7 @@ void IncrementalUpdate::forget_facts(int64_t file_id, bool removed) {
   auto run = [&](const char* sql) {
     auto st = db_.prepare(sql);
     st.bind(1, file_id).run();
+    file_scan_steps_ += st.full_scan_steps();
   };
   run("INSERT OR IGNORE INTO refresh_touched(id) VALUES (?1)");
   if (removed) run("INSERT OR IGNORE INTO refresh_removed(id) VALUES (?1)");
@@ -138,7 +140,9 @@ void IncrementalUpdate::forget_facts(int64_t file_id, bool removed) {
   run("DELETE FROM bindings WHERE file_id = ?1");
   run("DELETE FROM exports WHERE file_id = ?1");
   run("DELETE FROM file_deps WHERE src_file_id = ?1");
-  run("DELETE FROM type_hints WHERE file_id = ?1");
+  // Through the scope index: a file's hints are scoped to its own symbols
+  // (FactWriter), and type_hints has no file_id index (a scan per file).
+  run("DELETE FROM type_hints WHERE scope_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)");
   run("DELETE FROM route_middleware WHERE route_id IN (SELECT id FROM routes WHERE file_id = ?1)");
   run("DELETE FROM routes WHERE file_id = ?1");
   run("DELETE FROM mounts WHERE file_id = ?1");
@@ -415,6 +419,7 @@ json IncrementalUpdate::stats() const {
           {"affected_files", affected_files_},
           {"relationships_reset", reset_edges_},
           {"full_reresolve", full_reresolve_},
+          {"file_scan_steps", file_scan_steps_},
           {"timing_ms", timing},
           {"affected_breakdown", breakdown_}};
 }

@@ -80,6 +80,9 @@ class IncrementalUpdate {
   db::Statement lookup_, seen_;
   int64_t changed_ = 0, added_ = 0, removed_ = 0, unchanged_ = 0;
   int64_t affected_files_ = 0, reset_edges_ = 0, changed_names_ = 0, reused_symbols_ = 0;
+  // Rows visited by full table scans in the per-file statements: every changed
+  // file runs them, so a scan there makes a large refresh quadratic.
+  int64_t file_scan_steps_ = 0;
   bool full_reresolve_ = false;
   std::unordered_map<std::string, int64_t> reuse_ids_;
   std::map<std::string, double> timings_;

@@ -114,6 +114,7 @@ class JavaExtractor {
   // seen after the registration call; they complete the route when entered.
   std::unordered_map<const void*, int> pending_lambda_;  // lambda node -> route index
   std::unordered_map<const void*, int> pending_anon_;    // object creation with a class body -> route index
+  std::unordered_set<const void*> handler_refs_;          // method references recorded as route handlers
   std::unordered_map<std::string, RefFact> servlet_names_;  // servlet name (Tomcat, ServletContext) -> class
   std::unordered_map<std::string, RefFact> servlet_vars_;   // ServletRegistration / ServletHolder variables -> class
   std::string web_framework_;  // spark|javalin, from imports
@@ -243,6 +244,7 @@ class JavaExtractor {
     else if (t == "object_creation_expression") on_new(n);
     else if (t == "explicit_constructor_invocation") on_explicit_ctor(n);
     else if (t == "lambda_expression") on_lambda(n);
+    else if (t == "method_reference") on_method_ref(n);
     else if (t == "resource") on_resource(n);
     else if (t == "instanceof_expression") on_instanceof(n);
     else if (t == "throw_statement") on_throw(n);
@@ -731,6 +733,64 @@ class JavaExtractor {
     link_receiver(n, index);
   }
 
+  // A method reference (this::m, Type::m, obj::m, Type::new) stands for the
+  // lambda that calls it, and calls in a lambda body belong to the enclosing
+  // method, so it is a call from there. The argument count is not visible:
+  // overloads sharing the name stay ambiguous.
+  void on_method_ref(TSNode n) {
+    if (handler_refs_.count(ts::node_id(n))) return;  // a route handler, recorded with its route
+    uint32_t count = ts_node_named_child_count(n);
+    TSNode owner = count > 0 ? ts_node_named_child(n, 0) : TSNode{};
+    TSNode member = count > 1 ? ts_node_named_child(n, count - 1) : TSNode{};
+    if (!owner.id) return;
+    CallFact c;
+    c.caller = scope();
+    c.pos = ts::start_pos(n);
+    c.text = ts::clip(std::string(text(n)));
+    if (!is(member, "identifier")) {
+      // Type::new (a constructor reference); array constructors (int[]::new) are skipped.
+      bool ctor = false;
+      for (uint32_t i = 0; i < ts_node_child_count(n); ++i) ctor = ctor || is(ts_node_child(n, i), "new");
+      if (!ctor || is(owner, "array_type")) return;
+      c.kind = "instantiates";
+      c.name = simple_name(std::string(text(owner)));
+      c.receiver_kind = "none";
+      if (!c.name.empty()) out_.calls.push_back(std::move(c));
+      return;
+    }
+    c.kind = "calls";
+    c.name = std::string(text(member));
+    if (is(owner, "generic_type")) owner = ts_node_named_child(owner, 0);  // List<String>::size
+    if (is(owner, "this")) {
+      c.receiver_kind = "this";
+      c.receiver = "this";
+    } else if (is(owner, "super")) {
+      c.receiver_kind = "super";
+      c.receiver = "super";
+    } else if (is(owner, "identifier") || is(owner, "type_identifier")) {
+      c.receiver_kind = "identifier";  // a variable, or a class (static or unbound method)
+      c.receiver = std::string(text(owner));
+    } else if (is(owner, "field_access") && is(field(owner, "object"), "this")) {
+      c.receiver_kind = "this_member";
+      c.receiver = std::string(text(field(owner, "field")));
+    } else if (is(owner, "field_access") || is(owner, "scoped_identifier") || is(owner, "scoped_type_identifier")) {
+      c.receiver_kind = "qualified";
+      c.receiver = ts::short_text(owner, src_);
+    } else if (std::string typed = written_type(owner); !typed.empty()) {
+      c.receiver_kind = "typed";
+      c.receiver = typed;
+    } else if (is(owner, "method_invocation")) {
+      c.receiver_kind = "call";
+      c.receiver = ts::short_text(owner, src_);
+    } else {
+      c.receiver_kind = "expression";
+      c.receiver = ts::short_text(owner, src_);
+    }
+    bool chained = c.receiver_kind == "call";
+    out_.calls.push_back(std::move(c));
+    if (chained) awaiting_receiver_[ts::node_id(owner)] = static_cast<int>(out_.calls.size()) - 1;
+  }
+
   // ---- routes registered in code ------------------------------------------------
 
   std::vector<TSNode> args_of(TSNode call) const {
@@ -823,6 +883,7 @@ class JavaExtractor {
     ref.text = ts::short_text(h, src_);
     if (is(h, "method_reference")) {
       // Type::method, this::method, obj::method
+      handler_refs_.insert(ts::node_id(h));
       uint32_t c = ts_node_named_child_count(h);
       TSNode owner = c > 0 ? ts_node_named_child(h, 0) : TSNode{};
       TSNode member = c > 1 ? ts_node_named_child(h, c - 1) : TSNode{};
