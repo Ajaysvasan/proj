@@ -3,6 +3,3 @@
 # Node
 /cli/node_modules/
 /cli/dist/
-
-# Local specification notes (not published)
-/Prompt.md
