@@ -11,8 +11,8 @@ function unicodeSupported(env: NodeJS.ProcessEnv = process.env): boolean {
 export const UNICODE = unicodeSupported();
 
 export const glyph = UNICODE
-  ? { branch: '├─ ', last: '└─ ', pipe: '│  ', space: '   ', arrow: '→', back: '←', seen: '↺', ext: '↗', bullet: '•', sel: '›' }
-  : { branch: '|- ', last: '`- ', pipe: '|  ', space: '   ', arrow: '->', back: '<-', seen: '@', ext: '^', bullet: '*', sel: '>' };
+  ? { branch: '├─ ', last: '└─ ', pipe: '│  ', space: '   ', arrow: '→', back: '←', seen: '↺', ext: '↗', bullet: '•', sel: '›', times: '×' }
+  : { branch: '|- ', last: '`- ', pipe: '|  ', space: '   ', arrow: '->', back: '<-', seen: '@', ext: '^', bullet: '*', sel: '>', times: 'x' };
 
 export function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms)) return '-';

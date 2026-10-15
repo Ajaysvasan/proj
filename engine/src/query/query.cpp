@@ -4,6 +4,7 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -12,6 +13,8 @@
 #include "core/hash.hpp"
 #include "core/paths.hpp"
 #include "db/schema.hpp"
+#include "dynamic/runtime_store.hpp"
+#include "query/runtime_map.hpp"
 
 namespace proj {
 namespace fs = std::filesystem;
@@ -435,6 +438,24 @@ json IndexReader::traverse(int64_t root, const TraverseOptions& opt) {
                            " FROM edge_candidates c JOIN symbols s ON s.id = c.symbol_id JOIN files f ON f.id = s.file_id "
                            "WHERE c.edge_id = ? ORDER BY s.id LIMIT 5");
 
+  // Runtime observations of this project, when there are any (dynamic tracing).
+  std::unique_ptr<db::Database> rt_db;
+  std::unique_ptr<RuntimeMap> rt;
+  if (!opt.runtime_store.empty()) {
+    std::error_code ec;
+    if (std::filesystem::exists(opt.runtime_store, ec)) {
+      try {
+        rt_db = std::make_unique<db::Database>(opt.runtime_store, db::OpenMode::ReadOnly);
+        rt_db->exec("PRAGMA busy_timeout=5000");
+        if (dynamic::runtime_schema_current(*rt_db) && rt_db->query_int("SELECT COUNT(*) FROM rt_edges").value_or(0) > 0) {
+          rt = std::make_unique<RuntimeMap>(db_, *rt_db);
+        }
+      } catch (const db::Error&) {
+        rt.reset();  // an unreadable store never breaks the static view
+      }
+    }
+  }
+
   json nodes = json::array();
   nodes.push_back({{"index", 0}, {"parent", nullptr}, {"depth", 0}, {"symbol", root_sym}, {"edge", nullptr}});
   std::unordered_set<int64_t> visited{root};
@@ -491,6 +512,54 @@ json IndexReader::traverse(int64_t root, const TraverseOptions& opt) {
       groups.push_back(std::move(g));
     }
     st.reset();
+    if (rt) {
+      // Evidence on the static edges, observed counts, and calls only the runtime has seen.
+      std::map<int64_t, int64_t> seen;
+      std::map<std::string, int64_t> unmapped;
+      rt->observed(sym_id, forward, seen, unmapped);
+      for (auto& g : groups) {
+        std::string status = g.edge["status"].get<std::string>();
+        if (status == "resolved") g.edge["evidence"] = "STATIC_CONFIRMED";
+        else if (status == "heuristic" || status == "ambiguous") g.edge["evidence"] = "STATIC_INFERRED";
+        if (g.symbol.is_null()) continue;
+        if (auto it = seen.find(g.symbol["id"].get<int64_t>()); it != seen.end()) {
+          g.edge["observed"] = it->second;
+          seen.erase(it);
+        }
+      }
+      std::vector<Group> extra;
+      for (auto& [other, calls] : seen) {
+        Evidence ev = forward ? rt->evidence(sym_id, other) : rt->evidence(other, sym_id);
+        // Predicted indirectly (an ambiguous call's candidate, dispatch to an override): on that edge.
+        Group* host = nullptr;
+        for (auto& g : groups) {
+          if ((ev.via_edge >= 0 && g.edge_id == ev.via_edge) ||
+              (ev.via_symbol >= 0 && !g.symbol.is_null() && g.symbol["id"].get<int64_t>() == ev.via_symbol)) {
+            host = &g;
+          }
+        }
+        if (forward && host) {
+          host->edge["observed"] = host->edge.value("observed", int64_t{0}) + calls;
+          host->edge["observed_target"] = symbol_brief(other);
+          continue;
+        }
+        Group g;
+        g.edge = {{"kind", "calls"}, {"status", "observed"}, {"evidence", ev.kind}, {"observed", calls},
+                  {"line", nullptr}, {"col", nullptr}, {"path", nullptr}, {"target_name", nullptr},
+                  {"target_text", nullptr}, {"note", ev.note}};
+        g.symbol = symbol_brief(other);
+        extra.push_back(std::move(g));
+      }
+      for (auto& [identity, calls] : unmapped) {
+        Group g;
+        g.edge = {{"kind", "calls"}, {"status", "observed"}, {"evidence", "RUNTIME_UNRESOLVED"}, {"observed", calls},
+                  {"line", nullptr}, {"col", nullptr}, {"path", nullptr}, {"target_name", nullptr},
+                  {"target_text", identity}, {"note", "seen at runtime; this method is not in the index"}};
+        g.symbol = nullptr;
+        extra.push_back(std::move(g));
+      }
+      for (auto& g : extra) groups.push_back(std::move(g));
+    }
     int64_t children = 0;
     for (auto& g : groups) {
       if (children >= max_children) {

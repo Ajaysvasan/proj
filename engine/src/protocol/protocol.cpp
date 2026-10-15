@@ -13,6 +13,7 @@
 #include "core/paths.hpp"
 #include "core/version.hpp"
 #include "db/schema.hpp"
+#include "dynamic/service.hpp"
 #include "index/indexer.hpp"
 #include "index/registry.hpp"
 #include "query/query.hpp"
@@ -411,6 +412,15 @@ json Engine::dispatch(const std::string& op, const json& args, const fs::path& d
   }
 
   // ---- index queries --------------------------------------------------------
+  // The project's runtime store (dynamic tracing); it may not exist.
+  auto runtime_store = [&]() {
+    std::string name = require_string(args, "project");
+    auto project = registry(data_dir).find_by_name(name);
+    if (!project) {
+      throw ProtocolError(status::kNotFound, "unknown_project", "no project named '" + name + "' is registered", {{"project", name}});
+    }
+    return dynamic::runtime_store_path(data_dir, project->id);
+  };
   auto traverse_options = [&]() {
     TraverseOptions t;
     t.direction = args.value("direction", std::string("forward"));
@@ -422,6 +432,7 @@ json Engine::dispatch(const std::string& op, const json& args, const fs::path& d
     t.max_children = get_int(args, "max_children", 40);
     t.include_unresolved = get_bool(args, "include_unresolved", true);
     t.edge_kinds = get_strings(args, "edge_kinds");
+    if (get_bool(args, "runtime", true)) t.runtime_store = runtime_store();
     return t;
   };
   auto required_id = [&](const char* key) {
@@ -467,6 +478,15 @@ json Engine::dispatch(const std::string& op, const json& args, const fs::path& d
     return idx.file_deps(required_id("file_id"), dir, get_int(args, "limit", 100), get_int(args, "offset", 0));
   }
   if (op == "entry_points") return open_index(data_dir, args).entry_points(get_int(args, "limit", 100));
+  if (op == "runtime_sessions") return open_index(data_dir, args).runtime_sessions(runtime_store(), get_int(args, "limit", 20));
+  if (op == "runtime_traces") {
+    return open_index(data_dir, args).runtime_traces(runtime_store(), get_int(args, "limit", 50), get_int(args, "offset", 0));
+  }
+  if (op == "runtime_trace") return not_null(open_index(data_dir, args).runtime_trace(runtime_store(), required_id("trace_id")), "trace");
+  if (op == "runtime_errors") {
+    return open_index(data_dir, args).runtime_errors(runtime_store(), get_int(args, "limit", 50), get_int(args, "offset", 0));
+  }
+  if (op == "runtime_error") return not_null(open_index(data_dir, args).runtime_error(runtime_store(), required_id("error_id")), "error");
   if (op == "routes") return open_index(data_dir, args).routes(get_int(args, "limit", 100), get_int(args, "offset", 0));
   if (op == "overview") {
     std::string focus = args.contains("focus") && args["focus"].is_string() ? args["focus"].get<std::string>() : "";

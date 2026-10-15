@@ -15,7 +15,11 @@ export type View =
   | { kind: 'route'; id: number }
   | { kind: 'entries' }
   | { kind: 'routes' }
-  | { kind: 'status' };
+  | { kind: 'status' }
+  | { kind: 'errors' }
+  | { kind: 'error'; id: number }
+  | { kind: 'traces' }
+  | { kind: 'trace'; id: number };
 
 export interface ViewProps {
   session: EngineSession;
@@ -162,6 +166,8 @@ export function HomeView(
       if (input === 'e') return props.open({ kind: 'entries' });
       if (input === 'r') return props.open({ kind: 'routes' });
       if (input === 's') return props.open({ kind: 'status' });
+      if (input === 'x') return props.open({ kind: 'errors' });
+      if (input === 't') return props.open({ kind: 'traces' });
       if (key.escape && state.query) return setQueryText(() => '');
     },
     { isActive: props.active },
@@ -645,5 +651,7 @@ export const HELP_LINES = [
   '  a            links drawn: strongest per part, top 3, all (the selected part always shows all of its links)',
   '  /show <endpoint>  find an API endpoint, e.g. /show GET /api/users/42, and open its flow with Enter',
   '  e            entry points     r  API routes     s  status and limitations',
+  '  x            Error Tracer: exceptions seen at runtime     t  observed traces (both need `proj start dynamic`)',
+  'Runtime evidence in call trees: [ran N×] seen at runtime; [runtime only] no static call site; [not in the index] code proj did not analyze',
   'Markers: [unresolved] [ambiguous] [heuristic] [external]; "shown above" marks an already expanded node (cycle).',
 ];

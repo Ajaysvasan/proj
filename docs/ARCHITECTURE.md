@@ -37,6 +37,9 @@ itself.
 | `index/registry.*` | Projects, runs and bounded per-run diagnostics |
 | `query/query.*` | Search, symbol/file details, edges, bounded BFS traversal, route flow, exceptions, startup path, integrity check, source snippets |
 | `query/overview.cpp` | Code map: the project's directories grouped into a bounded number of parts, with per-part counts and aggregated links between parts |
+| `query/runtime.cpp`, `query/runtime_map.hpp` | Runtime observations read from a project's runtime store: traces, errors, sessions; runtime methods mapped to static symbols; evidence on traversals |
+| `dynamic/runtime_store.*` | The runtime store (`runtime/project-N.db`): sessions, methods, call trees, aggregated observed calls, deduplicated errors, retention |
+| `dynamic/service.*`, `dynamic/platform.*` | The runtime tracing service (`--dynamic-service`): per-project monitors, agent connections on 127.0.0.1, attach to running JVMs, control requests from the CLI |
 | `protocol/protocol.*` | JSON envelope, argument validation, error categories, read-only index cache in serve mode |
 
 ## Analysis data flow
@@ -264,6 +267,16 @@ all, and the details panel lists every link of the selected part.
 `cli/src/ui/codemap.tsx` handles selection, zoom (Enter, Backspace) and the
 details panel.
 
+## Runtime tracing
+
+An optional second source of relationships: a Java agent (`agent/`) records
+what a running JVM did, a service process (`proj-engine --dynamic-service`)
+stores it in `runtime/project-N.db`, and the query layer maps runtime methods
+to static symbols when it reads them. The static index is never written, so
+analysis and refresh are unaffected; observations survive re-analysis because
+they are keyed by runtime identity (class, method, JVM descriptor). See
+[DYNAMIC_TRACING.md](DYNAMIC_TRACING.md).
+
 ## Memory model
 
 - One source file, one syntax tree and one file's facts in memory at a time.
@@ -336,7 +349,9 @@ Operations: `info`, `add_project`, `refresh_project` (optional
 `max_affected_fraction` in (0, 1], default 0.4), `list_projects`, `project_status`,
 `list_runs`, `get_run`, `summary`, `search`, `symbol`, `edges`, `traverse`,
 `file`, `file_deps`, `entry_points`, `routes`, `route_flow`, `exceptions`,
-`startup_path`, `overview`, `check_index`, `snippet`. Their arguments are validated in
+`startup_path`, `overview`, `check_index`, `snippet`, and for runtime tracing
+`runtime_sessions`, `runtime_traces`, `runtime_trace`, `runtime_errors`,
+`runtime_error` (`traverse` adds runtime evidence unless `runtime: false`). Their arguments are validated in
 `engine/src/protocol/protocol.cpp`.
 
 The CLI treats a nonzero engine exit, a signal, invalid JSON, an envelope

@@ -33,9 +33,11 @@ uncertain links are visible rather than hidden.
   Apple Clang in CI)
 - CMake 3.24 or newer
 - Node.js 20 or newer, with npm
+- Optional, for runtime tracing of Java applications: a JDK 8 or newer (`javac`,
+  `jar`). Without one, everything else builds and runtime tracing is unavailable.
 - Network access the first time you build. CMake downloads pinned,
   SHA-256-verified dependency sources (SQLite, Tree-sitter and its grammars,
-  nlohmann/json) into `build/`, and npm installs the CLI's packages into
+  nlohmann/json; with a JDK, ASM's sources for the Java agent) into `build/`, and npm installs the CLI's packages into
   `cli/node_modules`. Nothing is installed system-wide.
 
 | System | Install the requirements |
@@ -138,6 +140,10 @@ shortcuts.
 | `proj refresh <name>` | Update the index after files changed: re-parses changed and added files, drops deleted ones, re-resolves affected relationships. The result equals a full re-analysis. |
 | `proj log [project]` | List analysis runs; `--run <id>` shows one run with its diagnostics. |
 | `proj show <name>` | Interactive explorer. Falls back to a text summary without a TTY; `--check` verifies index integrity. |
+| `proj start dynamic [name]` | Runtime tracing of a Java application (optional): prints the `-javaagent` option that records a JVM from startup; `--pid` / `--match` attach to running JVMs. |
+| `proj stop dynamic [name]` / `proj status dynamic [name]` | Stop runtime tracing (the application keeps running) / show monitored projects, connected JVMs and state transitions. |
+| `proj errors <name> [id]` | Error Tracer: exceptions observed at runtime (caught, wrapped, escaped, uncaught), with stacks most recent call first. |
+| `proj traces <name> [id]` | Execution traces observed at runtime, each call placed in the static index with its evidence. |
 
 Exit codes: `0` success, `1` internal failure, `2` user error, `3` partial
 analysis, `4` no supported source files, `130` interrupted. See
@@ -220,11 +226,27 @@ analyses in the same runs took 15–26 s. In every scenario the refreshed index
 was identical to a fresh full analysis (compared with `proj_index_dump`; see
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)).
 
+## Runtime tracing (Java, optional)
+
+Static analysis shows what code can call; runtime tracing records what a run
+did call and adds it to the same graph. `proj start dynamic <project>` starts a
+small local service and prints a `-javaagent:` option; a JVM started with it
+reports every call between application methods and every exception they see.
+Call trees in `proj show` then mark calls that ran (`[ran 3×]`), calls only the
+runtime saw (`[runtime only]`, e.g. reflection or classes named in
+configuration), and code outside the index; `x` in the explorer (or
+`proj errors`) is the Error Tracer, `t` (or `proj traces`) lists requests,
+startup and tasks. Observations live in `runtime/project-<id>.db`, never in the
+index, and never leave the machine. Details, the evidence model, measured
+overhead and limitations: [docs/DYNAMIC_TRACING.md](docs/DYNAMIC_TRACING.md).
+
 ## Where data is stored
 
 The index is never written inside the analyzed repository. The data directory
 holds `registry.db` (projects and analysis history), `indexes/project-<id>.db`
-(one SQLite index per project) and `logs/proj.log` (rotated application log):
+(one SQLite index per project), `runtime/project-<id>.db` (runtime tracing
+observations), `dynamic/` (the tracing service's port, token and state) and
+`logs/` (rotated application logs):
 
 - `--data-dir <dir>` or `$PROJ_HOME`, if set
 - Linux: `$XDG_DATA_HOME/proj`, defaulting to `~/.local/share/proj`
@@ -269,7 +291,8 @@ on macOS has not been measured; CI only checks that peak memory stays under
 ## Platform status
 
 - **Linux (Fedora 43, x86_64, GCC 15.3, Node 22):** built and fully tested
-  (engine: 76 test cases plus 4 leak checks; CLI: 45 tests).
+  (engine: 81 test cases plus 5 leak checks; CLI: 53 tests, 5 of them running
+  real JVMs with the agent on OpenJDK 21).
 - **CI (GitHub Actions; `.github/workflows/ci.yml`):** on Ubuntu with GCC,
   Ubuntu with Clang, and macOS with Apple Clang, every push builds the engine
   with warnings as errors and runs the engine tests, the CLI tests, the
@@ -283,5 +306,6 @@ on macOS has not been measured; CI only checks that peak memory stays under
 - [docs/INDEX_SCHEMA.md](docs/INDEX_SCHEMA.md): database schema and relationship semantics
 - [docs/LANGUAGE_SUPPORT.md](docs/LANGUAGE_SUPPORT.md): extracted constructs and limitations
 - [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md): commands, flags, keys, exit codes
+- [docs/DYNAMIC_TRACING.md](docs/DYNAMIC_TRACING.md): runtime tracing and the Error Tracer
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building, testing, debugging, benchmarks
 - [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md): milestones and status

@@ -27,6 +27,9 @@ struct TraverseOptions {
   int64_t max_children = 40;
   bool include_unresolved = true;
   std::vector<std::string> edge_kinds;  // empty = default set
+  // Runtime store of the project (dynamic tracing). When it exists, edges carry `evidence` and
+  // `observed` counts, and calls seen only at runtime are added (RUNTIME_OBSERVED/UNRESOLVED).
+  std::filesystem::path runtime_store;
 };
 
 // Read-only access to one project index. Every query is bounded by explicit
@@ -55,6 +58,14 @@ class IndexReader {
   json startup_path(int64_t symbol_id, int max_depth);
   json check();
   json snippet(int64_t file_id, int64_t line, int before, int after);
+
+  // Runtime observations (runtime/project-N.db), mapped to this index's symbols. A missing store
+  // means nothing was observed yet.
+  json runtime_sessions(const std::filesystem::path& store, int64_t limit);
+  json runtime_traces(const std::filesystem::path& store, int64_t limit, int64_t offset);
+  json runtime_trace(const std::filesystem::path& store, int64_t trace_id);
+  json runtime_errors(const std::filesystem::path& store, int64_t limit, int64_t offset);
+  json runtime_error(const std::filesystem::path& store, int64_t error_id);
 
  private:
   std::filesystem::path path_;

@@ -23,6 +23,11 @@ export interface TraverseNode {
     target_text?: string | null;
     note?: string | null;
     sites?: number;
+    /** Runtime tracing: STATIC_CONFIRMED | STATIC_INFERRED | RUNTIME_OBSERVED | RUNTIME_UNRESOLVED. */
+    evidence?: string;
+    /** Calls seen at runtime along this edge. */
+    observed?: number;
+    observed_target?: SymbolBrief;
   } | null;
   seen?: boolean;
   truncated_children?: number;
@@ -84,16 +89,28 @@ export function describeRow(row: TreeRow): string {
   const n = row.node;
   const e = n.edge;
   const label = e ? edgeLabel(e.kind) : '';
+  const ran = runtimeNote(e);
   if (n.symbol) {
     const sites = e && e.sites && e.sites > 1 ? ` x${e.sites}` : '';
     const seen = n.seen ? ` ${glyph.seen} shown above` : '';
-    const status = e && e.status !== 'resolved' ? ` [${e.status}]` : '';
-    return `${label}${n.symbol.qualified_name}  ${n.symbol.path}:${n.symbol.line}${status}${sites}${seen}`;
+    const status = e && e.status !== 'resolved' && e.status !== 'observed' ? ` [${e.status}]` : '';
+    return `${label}${n.symbol.qualified_name}  ${n.symbol.path}:${n.symbol.line}${status}${sites}${ran}${seen}`;
   }
   const target = e?.target_text ?? '?';
   if (e?.status === 'ambiguous') {
     const names = (n.candidates ?? []).map((c) => `${c.qualified_name} (${c.path}:${c.line})`).join(', ');
-    return `${label}${target} [ambiguous: ${names || 'several candidates'}]`;
+    return `${label}${target} [ambiguous: ${names || 'several candidates'}]${ran}`;
   }
-  return `${label}${target} [${e?.status ?? 'unknown'}${e?.note ? ': ' + e.note : ''}]`;
+  if (e?.evidence === 'RUNTIME_UNRESOLVED') return `${label}${target}${ran}`;
+  return `${label}${target} [${e?.status ?? 'unknown'}${e?.note ? ': ' + e.note : ''}]${ran}`;
+}
+
+/** What runtime tracing saw on an edge (empty when nothing was traced). */
+export function runtimeNote(e: TraverseNode['edge']): string {
+  if (!e || !e.observed) return '';
+  const times = `ran ${e.observed}${glyph.times}`;
+  if (e.evidence === 'RUNTIME_OBSERVED') return ` [runtime only, ${times}]`;
+  if (e.evidence === 'RUNTIME_UNRESOLVED') return ` [runtime only, not in the index, ${times}]`;
+  if (e.observed_target) return ` [${times} as ${e.observed_target.qualified_name}]`;
+  return ` [${times}]`;
 }

@@ -15,6 +15,8 @@
 
 #include <tree_sitter/api.h>
 
+#include "dynamic/runtime_store.hpp"
+#include "dynamic/service.hpp"
 #include "helpers.hpp"
 #include "parse/ts_util.hpp"
 #include "query/query.hpp"
@@ -132,6 +134,62 @@ TEST_CASE("repeated queries on a long-lived engine do not accumulate memory", "[
   size_t after = bytes_in_use();
   CHECK(bad == 0);
   INFO("baseline " << baseline << " bytes, after 6000 queries " << after << " bytes");
+  CHECK(after <= baseline + 4096);
+}
+
+TEST_CASE("runtime ingest and runtime queries release their memory", "[leak]") {
+  REQUIRE_EXACT_ACCOUNTING();
+  TempDir data;
+  protocol::Engine engine;
+  auto add = call(engine, "add_project", {{"name", "p"}, {"path", fixture("dynamic-java").string()}}, data.path());
+  REQUIRE(add["result"].is_object());
+  fs::path store = dynamic::runtime_store_path(data.path(), 1);
+  fs::create_directories(store.parent_path());
+  int64_t next = 1;
+  // One service-like batch: open the store, record traces with errors, close it.
+  auto ingest = [&](int traces) {
+    dynamic::RuntimeStore s(store, dynamic::Retention{200, 50, 10});
+    int64_t session = s.open_session({{"session", "s-" + std::to_string(next)}, {"mode", "startup"}, {"since_start", true}}, json::object());
+    s.begin();
+    s.method(session, {{"id", 1}, {"class", "com.example.shop.Bootstrap"}, {"name", "init"}, {"desc", "()V"},
+                       {"source", "Bootstrap.java"}, {"first_line", 9}, {"last_line", 12}});
+    s.method(session, {{"id", 2}, {"class", "com.example.shop.Config"}, {"name", "load"}, {"desc", "()Lcom/example/shop/Config;"},
+                       {"source", "Config.java"}, {"first_line", 11}, {"last_line", 11}});
+    for (int i = 0; i < traces; ++i, ++next) {
+      json err = {{"exception", "java.io.IOException"}, {"message", "m" + std::to_string(next % 7)}, {"state", "CAUGHT"},
+                  {"throw", {{"method", 2}, {"line", 11}}}, {"frames", {{"com.example.shop.Config", "load", "Config.java", 11, 1}}},
+                  {"events", {{"thrown", 2, 11}, {"caught", 1, 10}}}};
+      s.trace(session, {{"id", next}, {"status", "complete"}, {"thread", {{"id", 1}, {"name", "t"}}}, {"start_ms", next},
+                        {"duration_us", 5}, {"nodes", {{1, -1, 1, 0, 0}, {2, 0, 2, 1, 0}}}, {"errors", {err}}});
+    }
+    s.commit();
+    s.retain();
+    s.close_session(session, "ended", "the JVM exited");
+  };
+  auto found = call(engine, "search", {{"project", "p"}, {"query", "Bootstrap.init"}}, data.path());
+  int64_t sym = found["result"]["symbols"][0]["id"].get<int64_t>();
+  auto queries = [&](int n) {
+    int bad = 0;
+    for (int i = 0; i < n; ++i) {
+      bad += call(engine, "runtime_traces", {{"project", "p"}, {"limit", 50}}, data.path())["status"] != "ok";
+      auto traces = call(engine, "runtime_traces", {{"project", "p"}, {"limit", 1}}, data.path());
+      int64_t trace = traces["result"]["traces"][0]["id"].get<int64_t>();
+      bad += call(engine, "runtime_trace", {{"project", "p"}, {"trace_id", trace}}, data.path())["status"] != "ok";
+      auto errors = call(engine, "runtime_errors", {{"project", "p"}}, data.path());
+      bad += errors["status"] != "ok";
+      bad += call(engine, "runtime_error", {{"project", "p"}, {"error_id", errors["result"]["errors"][0]["id"]}}, data.path())["status"] != "ok";
+      bad += call(engine, "traverse", {{"project", "p"}, {"symbol_id", sym}, {"max_depth", 3}}, data.path())["status"] != "ok";
+    }
+    return bad;
+  };
+  ingest(50);
+  REQUIRE(queries(20) == 0);  // warm caches
+  size_t baseline = bytes_in_use();
+  for (int i = 0; i < 5; ++i) ingest(50);
+  int bad = queries(200);
+  size_t after = bytes_in_use();
+  CHECK(bad == 0);
+  INFO("baseline " << baseline << " bytes, after 250 traces and 1200 runtime queries " << after << " bytes");
   CHECK(after <= baseline + 4096);
 }
 

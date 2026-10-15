@@ -196,11 +196,20 @@ consistent, 1 otherwise.
   entry point, and the call flow from the handler (tabs: *Flow*, *Callers*,
   *Exceptions*).
 - **Entry points**, **Routes**, **Status and limitations**.
+- **Errors** (`x`, the Error Tracer) and **Traces** (`t`): what runtime tracing
+  recorded (see `proj errors`, `proj traces`). An error shows its state, throw
+  site, handler, stack (most recent call first; Enter on a frame opens its
+  method) and causes; a trace shows the observed call tree with each call's
+  evidence.
 
 Trees are bounded (depth adjustable, at most 300 nodes per view). A node
 reached a second time shows `shown above` instead of expanding again, so
 cycles terminate. Edge markers: `[unresolved: reason]`, `[ambiguous:
-candidates]`, `[heuristic]`, `[external]`; `xN` means N call sites.
+candidates]`, `[heuristic]`, `[external]`; `xN` means N call sites. With
+runtime tracing data: `[ran N×]` the call was observed N times (`as X` when the
+static edge was an interface or ambiguous call and X ran), `[runtime only]` no
+static call site accounts for it, `[runtime only, not in the index]` the
+callee is code proj did not analyze.
 
 ### Keys
 
@@ -222,12 +231,69 @@ candidates]`, `[heuristic]`, `[external]`; `xN` means N call sites.
 | `f` | open the symbol's file |
 | `o` | open the route handler |
 | `e`, `r`, `s` | entry points, routes, status (home) |
+| `x`, `t` | Error Tracer, observed traces (home; need runtime tracing data) |
 | `h` | home |
 | `?` | help |
 | `q`, Ctrl+C | quit (`q` is typed normally inside the search box) |
 
 The terminal is restored on exit, Ctrl+C, SIGTERM and SIGHUP, and the engine
 session process is closed.
+
+## proj start dynamic / proj stop dynamic / proj status dynamic
+
+Runtime tracing of Java applications (see [DYNAMIC_TRACING.md](DYNAMIC_TRACING.md)).
+
+```
+proj start dynamic [project] [--pid <pid> | --match <text>] [--include <package>]... [--json]
+proj stop dynamic [project] [--json]
+proj status dynamic [project] [--json]
+```
+
+`start` starts the service if needed (a background `proj-engine
+--dynamic-service`) and monitors the project, or every project configured by
+an earlier start. It prints the `-javaagent:` option that records a JVM from
+its startup. `--pid` attaches to that running JVM of yours; `--match` attaches
+to JVMs of yours whose command line contains the text, as they appear (both
+record only from the attach on). `--include` replaces the application
+packages found in the index. Starting a monitored project again changes
+nothing.
+
+`stop` detaches the agents (they restore the original classes) and stops
+monitoring; the applications keep running. The service exits when nothing is
+monitored. Stopping when nothing runs is not an error.
+
+`status` lists each monitored project's state (`IDLE`, `TARGET_DISCOVERED`,
+`ATTACHING`, `ATTACHED`, `CAPTURING`, `FLUSHING`), connected JVMs with their
+startup coverage, the agent option and the recent transitions.
+
+Needs a JDK for building the agent (`bin/proj-agent.jar`); the agent finds the
+service through `<data_dir>/dynamic/service.json`. Environment: `PROJ_AGENT_JAR`
+(agent location), `PROJ_JAVA` or `JAVA_HOME` (the JDK used to attach).
+
+## proj errors
+
+```
+proj errors <project> [id] [--limit <n>] [--json]
+```
+
+The Error Tracer. Without an id: exceptions observed at runtime, most recently
+seen first, with their state (`CAUGHT`, `WRAPPED`, `ESCAPED`, `UNCAUGHT`,
+`UNKNOWN`), the most recent application frame and the occurrence count. With
+an id: the exception, its state, throw site, most recent application frame and
+handler, the stack from the most recent call to the oldest (each frame with
+its file and line, and its project file when it is application code), causes,
+and the traces it occurred in. Works without the service.
+
+## proj traces
+
+```
+proj traces <project> [id] [--limit <n>] [--json]
+```
+
+Execution traces observed at runtime, newest first: requests (`GET /users/42`),
+startup (`main`), tasks. With an id: the call tree in order of first calls,
+each call placed in the static index with its evidence (`[static: inferred]`,
+`[runtime only]`, `[not in the index]`). Works without the service.
 
 ## Exit codes
 

@@ -4,6 +4,8 @@
 //   proj-engine --serve          newline-delimited requests/responses until EOF
 //   proj-engine --version        print version information as JSON
 //   proj-engine --dump-ast LANG FILE   print a Tree-sitter syntax tree (development aid)
+//   proj-engine --dynamic-service --data-dir DIR --agent-jar JAR [--java JAVA]
+//                                the runtime tracing service (started by `proj start dynamic`)
 //
 // stdout carries only protocol JSON; all diagnostics go to stderr.
 #include <csignal>
@@ -15,6 +17,7 @@
 
 #include "core/json.hpp"
 #include "core/version.hpp"
+#include "dynamic/service.hpp"
 #include "parse/parser.hpp"
 #include "protocol/protocol.hpp"
 #include "scan/language.hpp"
@@ -32,7 +35,8 @@ void write_line(const proj::json& response) {
 
 int usage() {
   std::fprintf(stderr,
-               "usage: proj-engine [--serve | --version | --dump-ast <language> <file>]\n"
+               "usage: proj-engine [--serve | --version | --dump-ast <language> <file> |\n"
+               "                    --dynamic-service --data-dir <dir> --agent-jar <jar> [--java <java>]]\n"
                "Reads JSON protocol requests on stdin; see docs/ARCHITECTURE.md.\n");
   return 2;
 }
@@ -68,6 +72,18 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (mode == "--dump-ast") return argc == 4 ? dump_ast(argv[2], argv[3]) : usage();
+    if (mode == "--dynamic-service") {
+      proj::dynamic::ServiceOptions opts;
+      for (int i = 2; i + 1 < argc; i += 2) {
+        std::string key = argv[i];
+        if (key == "--data-dir") opts.data_dir = argv[i + 1];
+        else if (key == "--agent-jar") opts.agent_jar = argv[i + 1];
+        else if (key == "--java") opts.java = argv[i + 1];
+        else return usage();
+      }
+      if (opts.data_dir.empty() || opts.agent_jar.empty() || argc % 2 != 0) return usage();
+      return proj::dynamic::run_service(opts);
+    }
     if (mode == "--help" || mode == "-h") {
       usage();
       return 0;

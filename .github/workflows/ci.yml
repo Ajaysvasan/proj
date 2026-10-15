@@ -32,6 +32,12 @@ jobs:
           cache: npm
           cache-dependency-path: cli/package-lock.json
 
+      # The Java agent (runtime tracing) and its end-to-end tests need a JDK.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Configure engine
         run: cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release -DPROJ_WARNINGS_AS_ERRORS=ON
 

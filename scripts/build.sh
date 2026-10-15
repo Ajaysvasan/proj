@@ -25,6 +25,8 @@ fi
 echo "==> Building the engine (release) in $build_dir"
 cmake -S "$root/engine" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release -DPROJ_BUILD_TESTS=OFF
 cmake --build "$build_dir" --parallel --target proj-engine
+# The Java agent for runtime tracing: a target only when CMake found a JDK (optional).
+cmake --build "$build_dir" --target proj_agent >/dev/null 2>&1 || true
 
 echo "==> Installing the engine into bin/"
 mkdir -p "$root/bin"
@@ -32,6 +34,13 @@ cp "$build_dir/proj-engine" "$root/bin/proj-engine.tmp"
 if command -v strip >/dev/null 2>&1; then strip "$root/bin/proj-engine.tmp"; fi
 mv "$root/bin/proj-engine.tmp" "$root/bin/proj-engine"
 "$root/bin/proj-engine" --version
+if [ -f "$build_dir/agent/proj-agent.jar" ]; then
+  cp "$build_dir/agent/proj-agent.jar" "$root/bin/proj-agent.jar.tmp"
+  mv "$root/bin/proj-agent.jar.tmp" "$root/bin/proj-agent.jar"
+  echo "==> Installed the Java agent into bin/ (runtime tracing: proj start dynamic)"
+else
+  echo "==> No JDK found: the Java agent for runtime tracing was not built"
+fi
 
 echo "==> Building the CLI"
 (cd "$root/cli" && npm ci && npm run build)

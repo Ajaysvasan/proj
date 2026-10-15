@@ -6,6 +6,7 @@ import { useLatest } from './hooks.js';
 import type { EngineSession } from '../engine/client.js';
 import { formatCount, truncate } from '../format.js';
 import { INITIAL_MAP } from './codemap.js';
+import { ErrorsView, ErrorView, TracesView, TraceView } from './runtime.js';
 import { EntryPointsView, FileView, HELP_LINES, HomeView, type HomeState, RouteView, RoutesView, StatusView, SymbolView, type View } from './views.js';
 
 export interface AppProps {
@@ -36,6 +37,14 @@ function crumb(v: View): string {
       return 'routes';
     case 'status':
       return 'status';
+    case 'errors':
+      return 'errors';
+    case 'error':
+      return `error #${v.id}`;
+    case 'traces':
+      return 'traces';
+    case 'trace':
+      return `trace #${v.id}`;
   }
 }
 
@@ -123,6 +132,18 @@ export function App({ session, project, summary, rootPath, initialRoute, initial
       case 'status':
         body = <StatusView {...props} summary={summary} />;
         break;
+      case 'errors':
+        body = <ErrorsView {...props} />;
+        break;
+      case 'error':
+        body = <ErrorView key={`x${view.id}`} {...props} id={view.id} />;
+        break;
+      case 'traces':
+        body = <TracesView {...props} />;
+        break;
+      case 'trace':
+        body = <TraceView key={`t${view.id}`} {...props} id={view.id} />;
+        break;
     }
   }
 
@@ -133,7 +154,7 @@ export function App({ session, project, summary, rootPath, initialRoute, initial
       ? 'type to search · Up/Down select · Enter open · Esc leave search'
       : view.kind === 'home'
         ? home.query.trim() === ''
-          ? 'arrows select · Enter zoom/open · Backspace out · a links · / search · /show endpoint · e entries · r routes · ? help · q quit'
+          ? 'arrows select · Enter zoom/open · Backspace out · a links · / search · /show endpoint · e entries · r routes · x errors · t traces · ? help · q quit'
           : '/ search · Up/Down select · Enter open · Esc clear · e entries · r routes · s status · ? help · q quit'
         : 'Up/Down select · Enter open · Tab switch · Esc back · h home · ? help · q quit';
   return (

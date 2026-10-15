@@ -14,6 +14,7 @@ endif()
 
 option(PROJ_BUILD_TESTS "Build the engine unit tests" ON)
 option(PROJ_WARNINGS_AS_ERRORS "Treat compiler warnings in engine sources as errors" OFF)
+option(PROJ_BUILD_AGENT "Build the Java runtime agent for dynamic tracing (needs a JDK)" ON)
 
 include(cmake/Dependencies.cmake)
 
@@ -44,6 +45,10 @@ add_library(proj_core STATIC
   src/index/indexer.cpp
   src/query/query.cpp
   src/query/overview.cpp
+  src/query/runtime.cpp
+  src/dynamic/runtime_store.cpp
+  src/dynamic/platform.cpp
+  src/dynamic/service.cpp
   src/protocol/protocol.cpp)
 target_include_directories(proj_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(proj_core PUBLIC PROJ_VERSION="${PROJECT_VERSION}")
@@ -51,6 +56,10 @@ target_link_libraries(proj_core PUBLIC proj_sqlite3 proj_tree_sitter proj_gramma
 target_compile_options(proj_core PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
 if(PROJ_WARNINGS_AS_ERRORS)
   target_compile_options(proj_core PRIVATE -Werror)
+endif()
+
+if(PROJ_BUILD_AGENT)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../agent ${CMAKE_CURRENT_BINARY_DIR}/agent)
 endif()
 
 add_executable(proj-engine src/main.cpp)

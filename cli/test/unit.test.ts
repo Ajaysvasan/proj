@@ -11,6 +11,8 @@ import { validateEnvelope } from '../src/engine/protocol.js';
 import { ExitCode } from '../src/exit-codes.js';
 import { resolveDataDir } from '../src/paths.js';
 import { describeRow, layoutTree, type TraverseNode } from '../src/ui/tree.js';
+import { glyph } from '../src/format.js';
+import { errorReport, traceLines } from '../src/ui/runtime_text.js';
 import { cleanupTemp, tempDir } from './helpers.js';
 
 after(cleanupTemp);
@@ -103,5 +105,67 @@ describe('flow tree layout', () => {
   });
   it('handles an empty result', () => {
     assert.deepEqual(layoutTree([]), []);
+  });
+});
+
+describe('runtime tracing text', () => {
+  const sym = (name: string, path: string, line: number) => ({ id: line, name, qualified_name: `a.${name}`, kind: 'method', path, line });
+
+  it('marks calls that ran, calls only the runtime saw, and code outside the index', () => {
+    const row = (edge: any, symbol: any = null) => describeRow({ prefix: '', node: { index: 1, parent: 0, depth: 1, symbol, edge } as TraverseNode });
+    const base = { kind: 'calls', line: 3, path: 'A.java' };
+    assert.equal(row({ ...base, status: 'resolved', evidence: 'STATIC_CONFIRMED', observed: 3 }, sym('load', 'Repo.java', 7)), `a.load  Repo.java:7 [ran 3${glyph.times}]`);
+    assert.equal(row({ ...base, status: 'resolved' }, sym('load', 'Repo.java', 7)), 'a.load  Repo.java:7');  // nothing traced: as before
+    assert.equal(row({ ...base, status: 'observed', evidence: 'RUNTIME_OBSERVED', observed: 1 }, sym('start', 'P.java', 8)), `a.start  P.java:8 [runtime only, ran 1${glyph.times}]`);
+    assert.equal(
+      row({ ...base, status: 'observed', evidence: 'RUNTIME_UNRESOLVED', observed: 2, target_text: 'gen.Stub.ping()V' }),
+      `gen.Stub.ping()V [runtime only, not in the index, ran 2${glyph.times}]`,
+    );
+    assert.equal(
+      row({ ...base, status: 'resolved', evidence: 'STATIC_CONFIRMED', observed: 2, observed_target: sym('UserHandler.doHandle', 'U.java', 9) }, sym('doHandle', 'B.java', 20)),
+      `a.doHandle  B.java:20 [ran 2${glyph.times} as a.UserHandler.doHandle]`,
+    );
+  });
+
+  it('prints an error with the most recent frame first and each location under it', () => {
+    const lines = errorReport({
+      exception: 'java.sql.SQLException', message: 'empty item', state: 'WRAPPED', rethrown: false, wrapped_by: 'java.lang.IllegalStateException',
+      occurrences: 2, first_seen: 't1', last_seen: 't2', thread: 'worker',
+      throw_site: { method: { display: 'PaymentRepository.save(String)' }, line: 8, symbol: sym('save', 'src/PaymentRepository.java', 6) },
+      caught_at: { method: { display: 'OrderService.create(String)' }, line: 13, symbol: null }, caught_type: 'java.sql.SQLException',
+      top_app_frame: { class: 'a.PaymentRepository', method: 'save', line: 8, symbol: null },
+      frames: [
+        { class: 'a.PaymentRepository', method: 'save', file: 'PaymentRepository.java', line: 8, application: true, symbol: sym('save', 'src/PaymentRepository.java', 6) },
+        { class: 'java.lang.Thread', method: 'run', file: 'Thread.java', line: 1583, application: false, symbol: null },
+      ],
+      frames_omitted: 0, causes: [], suppressed: 0, events: [], traces: [],
+    });
+    const stack = lines.indexOf('Stack, most recent call first:');
+    assert.deepEqual(lines.slice(stack + 1, stack + 5), [
+      '1. PaymentRepository.save()',
+      `   PaymentRepository.java:8  ${glyph.arrow} src/PaymentRepository.java`,
+      '2. Thread.run()  [outside the project]',
+      '   Thread.java:1583',
+    ]);
+    assert.ok(lines.includes(`Thrown at: PaymentRepository.save(String) line 8  ${glyph.arrow} src/PaymentRepository.java:8`));
+    assert.ok(lines.some((l) => l.startsWith('State: WRAPPED, caught and wrapped in another exception; wrapped by java.lang.IllegalStateException')));
+    // Thrown in a library: said so, not guessed.
+    assert.ok(errorReport({ exception: 'X', state: 'CAUGHT', occurrences: 1, frames: [], frames_omitted: 0 }).some((l) => l.startsWith('Thrown at: outside application code')));
+  });
+
+  it('indents a trace by depth and labels evidence', () => {
+    const lines = traceLines({
+      thread: 'main', pid: 1, duration_us: 1500, status: 'complete', startup_coverage: 'attached_late', dropped_nodes: 0,
+      nodes: [
+        { depth: 0, method: { display: 'Boot.init()' }, calls: 1, exits_by_exception: 0, symbol: sym('init', 'Boot.java', 3) },
+        { depth: 1, method: { display: 'Plugin.start()' }, calls: 2, exits_by_exception: 0, evidence: 'RUNTIME_OBSERVED', symbol: sym('start', 'P.java', 8) },
+        { depth: 2, method: { display: 'Stub.ping()' }, calls: 1, exits_by_exception: 1, evidence: 'RUNTIME_UNRESOLVED', symbol: null },
+      ],
+      errors: [],
+    });
+    assert.match(lines[0]!.text, /agent attached to a running JVM/);
+    assert.equal(lines[2]!.text, `  Plugin.start() ${glyph.times}2 [runtime only]  ${glyph.arrow} P.java:8`);
+    assert.equal(lines[3]!.text, '    Stub.ping() [exception] [not in the index]');
+    assert.equal(lines[3]!.symbol, undefined);
   });
 });

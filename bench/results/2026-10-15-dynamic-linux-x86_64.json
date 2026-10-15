@@ -1,0 +1,51 @@
+{
+  "host": {
+    "cpus": 20,
+    "cpu": "Intel(R) Core(TM) Ultra 7 255HX",
+    "platform": "linux",
+    "release": "7.2.9-100.fc43.x86_64",
+    "java": "openjdk version \"21.0.12.1\" 2026-08-18"
+  },
+  "overhead": {
+    "workload": "UserService.describe(id) in a loop for 8 s (5 application methods per call), median of 3 runs",
+    "calls_per_s": {
+      "no_agent": 35066750,
+      "recording": 6351000,
+      "standby": 27240875
+    },
+    "slowdown": {
+      "recording": 5.52,
+      "standby": 1.29
+    }
+  },
+  "requests": {
+    "workload": "3000 sequential GET /users/<id> (11 application methods each) after 500 warm-up requests",
+    "mean_us": {
+      "no_agent": 718,
+      "recording": 705.1
+    },
+    "added_us_per_request": -12.9
+  },
+  "throughput": {
+    "traces": 20000,
+    "jvm_ms": 104,
+    "dropped_items": 6304,
+    "delivered_traces": 13696,
+    "until_stored_ms": 914,
+    "delivered_per_s": 14985,
+    "stored_traces_after_retention": 5000,
+    "service_peak_rss_mib": 12,
+    "store_mib": 3.9
+  },
+  "backpressure": {
+    "queue_items": 16,
+    "jvm_exit": 0,
+    "dropped_items": 11898,
+    "startup_coverage": "interrupted"
+  },
+  "idle": {
+    "seconds": 30,
+    "service_cpu_s": 0,
+    "service_rss_mib": 12.1
+  }
+}

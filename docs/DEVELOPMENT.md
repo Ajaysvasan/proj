@@ -26,6 +26,7 @@ build/             (generated) CMake build trees and downloaded sources
 | C++ compiler | GCC 15.3 | C++20; CI also builds with Clang (Ubuntu) and Apple Clang (macOS) |
 | CMake | 3.31 (≥ 3.24 required) | |
 | Node.js / npm | 22.22 / 10.9 (Node ≥ 20 required) | |
+| JDK (optional) | OpenJDK 21 | `javac`, `jar`: builds the runtime tracing agent; CI uses Temurin 17 |
 | network | first configure only | downloads pinned archives into `build/` |
 
 Native dependencies (downloaded by CMake, verified by SHA-256, compiled into
@@ -39,6 +40,7 @@ the engine; nothing is installed system-wide):
 | tree-sitter-xml / yaml (tree-sitter-grammars) | 0.7.0 / 0.7.2 |
 | nlohmann/json | 3.11.3 |
 | Catch2 (tests only) | 3.8.1 (amalgamated) |
+| ASM (agent; sources, compiled in under `proj.agent.asm`) | 9.10.1 |
 
 Node dependencies are pinned exactly in `cli/package.json` and locked in
 `cli/package-lock.json`: commander 12.1.0, ink 6.3.1, react 19.1.1, chalk
@@ -77,19 +79,21 @@ Options: `-DPROJ_BUILD_TESTS=OFF` skips Catch2 and the test binary;
 ## Test
 
 ```sh
-# Engine: 76 Catch2 test cases (paths, ignore rules, scanner, extractors for all
+# Engine: 81 Catch2 test cases (paths, ignore rules, scanner, extractors for all
 # languages, schema/migrations, registry, end-to-end indexing of every fixture,
 # queries, traversal limits, failure handling, protocol errors, call
-# resolution, refresh equivalence, legacy routing and overloads, code map)
-# plus 4 leak checks.
+# resolution, refresh equivalence, legacy routing and overloads, code map,
+# runtime store, runtime mapping and evidence) plus 5 leak checks.
 ctest --test-dir build/engine --output-on-failure  # both test groups
 ./build/engine/tests/proj_engine_tests "~[leak]"   # everything except the leak checks
 ./build/engine/tests/proj_engine_tests "[python]"  # by tag
 ./build/engine/tests/proj_engine_tests "[legacy]"  # configuration routes, code registration, dispatch, overloads
+./build/engine/tests/proj_engine_tests "[dynamic]" # runtime store, mapping, evidence (no JVM needed)
 
-# CLI: 45 tests: unit, code map layout, engine-client (fake crashing/garbage/
-# hanging engines), CLI integration (spawns the real `proj`), and interactive
-# UI tests.
+# CLI: 53 tests: unit, code map layout, engine-client (fake crashing/garbage/
+# hanging engines), CLI integration (spawns the real `proj`), interactive UI
+# tests, and 5 runtime tracing tests that run the dynamic-java fixture in real
+# JVMs with the agent (skipped without a JDK or build/engine/agent/proj-agent.jar).
 cd cli && npm test
 ```
 
@@ -183,6 +187,11 @@ Where `libasan`/`libubsan` are installed, use
 `-fsanitize=address,undefined` instead.
 
 ## Benchmarks
+
+Runtime tracing (needs a JDK and the built agent):
+`node bench/dynamic.mjs [--seconds 8] [--runs 3] [--traces 20000] [--requests 3000] [--idle 30]`
+measures the agent's overhead, request latency, trace throughput, behavior
+with a tiny queue and the idle service (see docs/DYNAMIC_TRACING.md for results).
 
 ```sh
 node bench/generate.mjs /tmp/synthetic --files 5000 --seed 42   # inspect a generated tree

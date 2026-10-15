@@ -1,6 +1,8 @@
 # Index schema
 
-Two kinds of SQLite database live in the data directory:
+Two kinds of SQLite database live in the data directory (runtime tracing adds
+a third, `runtime/project-<id>.db`, described in DYNAMIC_TRACING.md; it is
+never part of an index):
 
 - `registry.db`: shared. Projects, analysis runs and run diagnostics.
   Upgraded in place by numbered migrations (`PRAGMA user_version`, currently

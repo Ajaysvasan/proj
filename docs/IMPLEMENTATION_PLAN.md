@@ -95,6 +95,20 @@ Found by measuring Kafka (non-test Java methods without any caller in the graph,
 - [x] Background execution: `submit`/`execute`/`schedule*`, `runAsync`/`supplyAsync`, `invokeLater`, `Timer.schedule`, `addShutdownHook`, `new Thread(task)` and `start()` on `Thread` subclasses link to the task's `run()`/`call()` as inferred edges (Kafka: `run()`/`call()` of task and thread classes without callers 77 → 15; the rest go through Kafka's own timer API)
 - [ ] Narrow overloaded method references by the functional interface they are passed as
 
+## Phase 12: Runtime tracing (Java) and the Error Tracer
+See docs/DYNAMIC_TRACING.md.
+- [x] Mechanism measured first: a JVMTI agent attached to a running JDK 21 gets no method or exception events, so a `java.lang.instrument` agent with ASM (9.10.1, pinned and hash-checked, compiled in under `proj.agent.asm`, Java 8 bytecode)
+- [x] Agent: entry/exit hooks with a catch-all exit handler, throw and catch hooks, default uncaught handler; per-thread call trees merged by (parent, method); request names (HttpExchange, servlet); bounded queue with counted drops; reconnects; detach restores the original classes
+- [x] Service (`proj-engine --dynamic-service`): per-project state machine (IDLE, TARGET_DISCOVERED, ATTACHING, ATTACHED, CAPTURING, FLUSHING, STOPPED), 127.0.0.1 + token, startup option, `--pid` and `--match` attach with bounded retries, standby agents, resume after restart, no wakeups while idle
+- [x] Runtime store separate from the index: sessions, methods (JVM descriptors), call trees, aggregated edges, errors deduplicated by fingerprint; idempotent replays; retention
+- [x] Mapping to static symbols (exact, lambda, implicit, enclosing, unresolved) and evidence (STATIC_CONFIRMED, STATIC_INFERRED, RUNTIME_OBSERVED, RUNTIME_UNRESOLVED) on traversals and traces
+- [x] Error Tracer: CAUGHT, WRAPPED, ESCAPED, UNCAUGHT, UNKNOWN; rethrown; throw site, top application frame and handler kept apart; stacks most recent call first
+- [x] CLI: `proj start|stop|status dynamic`, `proj errors`, `proj traces`; explorer screens (`x`, `t`) and runtime markers in call trees
+- [x] Tests: engine (store, mapping, evidence, leak check), CLI end to end with real JVMs (lifecycle, startup, attach, termination, flows, errors, persistence); `bench/dynamic.mjs`
+- [ ] Cross-thread and cross-process causality; asynchronous request completion
+- [ ] Validation on an authorized legacy application (Tomcat, JBoss, WebSphere class loaders; OSGi boot delegation)
+- [ ] Lower per-call cost (a local variable instead of a second thread-local lookup per exit)
+
 ## Not implemented (by design for the MVP, documented)
 - [ ] `proj remove` (manual steps in the README)
 - [ ] Generics-based resolution (`List<User>` element types)
