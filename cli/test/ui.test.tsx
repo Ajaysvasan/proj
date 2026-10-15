@@ -56,6 +56,21 @@ async function waitFor(stdout: FakeStdout, test: (frame: string) => boolean, wha
   throw new Error(`timed out waiting for ${what}; last frame:\n${stdout.lastFrame()}`);
 }
 
+// Ink attaches a view's input handler in an effect that runs after the frame is drawn, so a key sent
+// as soon as a new view appears can arrive before anything listens. Send it again until the UI reacts.
+async function press(stdin: FakeStdin, stdout: FakeStdout, key: string, test: (frame: string) => boolean, what: string): Promise<string> {
+  const start = Date.now();
+  while (Date.now() - start < 10000) {
+    stdin.send(key);
+    try {
+      return await waitFor(stdout, test, what, 1000);
+    } catch {
+      // not handled yet: send it again
+    }
+  }
+  throw new Error(`timed out waiting for ${what}; last frame:\n${stdout.lastFrame()}`);
+}
+
 describe('interactive UI', () => {
   let dataDir: string;
   let status: any;
@@ -128,9 +143,8 @@ describe('interactive UI', () => {
 
       stdin.send('h');
       await waitFor(stdout, (f) => f.includes('Search: GET /api/users/42'), 'home');
-      stdin.send(KEY.escape); // leaves the search box
-      stdin.send('e');
-      frame = await waitFor(stdout, (f) => f.includes('package_main') && f.includes('src/server.js:1'), 'entry points');
+      await press(stdin, stdout, KEY.escape, (f) => !f.includes('type to search'), 'search box left');
+      frame = await press(stdin, stdout, 'e', (f) => f.includes('package_main') && f.includes('src/server.js:1'), 'entry points');
 
       stdin.send('q');
       const exited = await Promise.race([
@@ -186,10 +200,8 @@ describe('interactive UI', () => {
 
       stdin.send('h');
       await waitFor(stdout, (f) => f.includes('Search: /show GET /api/users/42') && !f.includes('handler     '), 'home with the query');
-      stdin.send(KEY.escape); // leaves the search box
-      await waitFor(stdout, (f) => !f.includes('type to search'), 'search box left');
-      stdin.send('r');
-      frame = await waitFor(stdout, (f) => f.includes('API routes') && f.includes('→ OrderServlet.service'), 'routes list with handler methods');
+      await press(stdin, stdout, KEY.escape, (f) => !f.includes('type to search'), 'search box left');
+      frame = await press(stdin, stdout, 'r', (f) => f.includes('API routes') && f.includes('→ OrderServlet.service'), 'routes list with handler methods');
       assert.match(frame, /GET {5}\/api\/users\/\*  → UserServlet\.doGet/);
 
       stdin.send('q');
